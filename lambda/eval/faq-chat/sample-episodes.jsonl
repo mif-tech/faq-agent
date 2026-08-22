@@ -1,0 +1,2 @@
+{"id":"sample-ep-hours-location","tags":["sample","rally"],"blocking":false,"turns":[{"user":"営業時間を教えてください。","expected":{"route":"answer","critical":true}},{"user":"所在地も教えてください。","expected":{"route":"answer","critical":true}}]}
+{"id":"sample-ep-refuse-recovery","tags":["sample","rally"],"blocking":false,"turns":[{"user":"明日の天気予報を教えてください。","expected":{"route":"refuse","critical":true}},{"user":"では、返品ポリシーを教えてください。","expected":{"route":"answer","critical":true}}]}

@@ -1,0 +1,26 @@
+{
+  "name": "mif-faq-chat-free",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "faq:preflight": "bash scripts/preflight.sh",
+    "faq:local:up": "bash scripts/faq-local-up.sh",
+    "faq:local:down": "bash scripts/faq-local-down.sh",
+    "faq:local:seed": "npx tsx scripts/faq-local-seed.ts",
+    "test": "npm --prefix lambda test",
+    "eval:mock": "npm --prefix lambda run eval:mock"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

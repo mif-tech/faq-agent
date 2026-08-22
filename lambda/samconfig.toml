@@ -1,0 +1,39 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "mif-faq-chat-free"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[local.local_start_api.parameters]
+docker_network = "lambda-local"
+warm_containers = "LAZY"
+parameter_overrides = [
+  "Environment=dev",
+  "DynamoDBEndpoint=http://dynamodb-local:8000",
+  "FaqPortsProfile=free",
+  "FaqChatCorsOrigin=*"
+]
+
+[local.local_invoke.parameters]
+docker_network = "lambda-local"
+parameter_overrides = [
+  "Environment=dev",
+  "DynamoDBEndpoint=http://dynamodb-local:8000",
+  "FaqPortsProfile=free",
+  "FaqChatCorsOrigin=*"
+]
+
+[dev.deploy.parameters]
+stack_name = "mif-faq-chat-free-dev"
+region = "us-west-2"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+fail_on_empty_changeset = false
+resolve_s3 = true
+parameter_overrides = [
+  "Environment=dev",
+  "FaqPortsProfile=free"
+]

@@ -1,0 +1,50 @@
+[
+  {
+    "id": "sample-kb-hours",
+    "topic": "営業時間",
+    "canonicalUrl": "https://example.com/hours",
+    "content": "サンプル株式会社の営業時間は平日の午前9時から午後6時までです。土曜日、日曜日、祝日は休業します。"
+  },
+  {
+    "id": "sample-kb-location",
+    "topic": "所在地",
+    "canonicalUrl": "https://example.com/location",
+    "content": "サンプル株式会社はサンプル市中央一丁目にあります。サンプル駅の東口から徒歩5分です。"
+  },
+  {
+    "id": "sample-kb-returns",
+    "topic": "返品ポリシー",
+    "canonicalUrl": "https://example.com/returns",
+    "content": "未使用かつ未開封の商品は、到着後14日以内に事前連絡した場合に返品を受け付けます。"
+  },
+  {
+    "id": "sample-kb-payment",
+    "topic": "支払い方法",
+    "canonicalUrl": "https://example.com/payment",
+    "content": "支払いにはクレジットカードと銀行振込を利用できます。分割払いの条件はカード会社に確認してください。"
+  },
+  {
+    "id": "sample-kb-contact",
+    "topic": "お問い合わせ窓口",
+    "canonicalUrl": "https://example.com/contact",
+    "content": "問い合わせはウェブフォームで受け付けます。通常は平日の2営業日以内に回答します。"
+  },
+  {
+    "id": "sample-kb-shipping",
+    "topic": "配送",
+    "canonicalUrl": "https://example.com/shipping",
+    "content": "国内の通常配送は発送から3営業日から5営業日が目安です。確定した予定日は発送通知で案内します。"
+  },
+  {
+    "id": "sample-kb-warranty",
+    "topic": "保証",
+    "canonicalUrl": "https://example.com/warranty",
+    "content": "通常使用で生じた製造上の不具合は、購入日から1年間の保証対象です。"
+  },
+  {
+    "id": "sample-kb-cancel",
+    "topic": "注文キャンセル",
+    "canonicalUrl": "https://example.com/cancellations",
+    "content": "注文は発送前に限りキャンセルできます。お問い合わせ窓口から注文番号を連絡してください。"
+  }
+]

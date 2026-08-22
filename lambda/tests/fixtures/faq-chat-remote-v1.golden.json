@@ -1,0 +1,210 @@
+{
+  "fixtureVersion": "faq-chat-remote-v1-golden-1",
+  "clock": {
+    "initialEpochMs": 1900000000000,
+    "sessionTtlMs": 1000,
+    "replayTtlMs": 5000
+  },
+  "cases": {
+    "success": {
+      "retrieve": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "question": "What are your support hours?",
+          "hints": {
+            "lexicalTerms": ["support", "hours"],
+            "semanticQueries": ["When is support available?"]
+          },
+          "remainingMs": 30000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": true,
+          "sessionToken": "9f1c2d3e-4a5b-4c6d-8e7f-1029384756ab",
+          "expiresAtEpochMs": 1900000001000
+        }
+      },
+      "generate": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "sessionToken": "9f1c2d3e-4a5b-4c6d-8e7f-1029384756ab",
+          "idempotencyKey": "answer-success-1",
+          "currentQuestion": "What are your support hours?",
+          "messages": [
+            { "role": "user", "content": "What are your support hours?" }
+          ],
+          "remainingMs": 29000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": true,
+          "response": {
+            "answer": "Support is available every weekday.",
+            "answerable": true,
+            "sources": [
+              {
+                "entryId": "faq-hours",
+                "topic": "Support hours",
+                "url": "https://example.com/support-hours"
+              }
+            ],
+            "responseType": "kb_answer"
+          }
+        }
+      }
+    },
+    "noMatch": {
+      "retrieve": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "question": "This question has no synthetic match.",
+          "remainingMs": 30000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": false,
+          "error": { "code": "no_match", "retryable": false }
+        }
+      }
+    },
+    "expiredToken": {
+      "advanceMs": 1000,
+      "retrieve": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "question": "What are your support hours?",
+          "remainingMs": 30000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": true,
+          "sessionToken": "1a2b3c4d-5e6f-4789-a0bc-def123456789",
+          "expiresAtEpochMs": 1900000001000
+        }
+      },
+      "generate": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "sessionToken": "1a2b3c4d-5e6f-4789-a0bc-def123456789",
+          "idempotencyKey": "answer-expired-1",
+          "currentQuestion": "What are your support hours?",
+          "messages": [
+            { "role": "user", "content": "What are your support hours?" }
+          ],
+          "remainingMs": 28000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": false,
+          "error": { "code": "expired_token", "retryable": true }
+        }
+      }
+    },
+    "quota": {
+      "generate": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "sessionToken": "7c8d9e0f-1a2b-43c4-b5d6-e7f8091a2b3c",
+          "idempotencyKey": "answer-quota-1",
+          "currentQuestion": "What are your support hours?",
+          "messages": [
+            { "role": "user", "content": "What are your support hours?" }
+          ],
+          "remainingMs": 25000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": false,
+          "error": {
+            "code": "quota_exceeded",
+            "retryable": true,
+            "retryAfterMs": 60000
+          }
+        }
+      }
+    },
+    "idempotentReplay": {
+      "retrieve": {
+        "request": {
+          "contractVersion": "remote-v1",
+          "question": "What are your support hours?",
+          "remainingMs": 30000
+        },
+        "response": {
+          "contractVersion": "remote-v1",
+          "ok": true,
+          "sessionToken": "3e4f5a6b-7c8d-49e0-af12-3456789abcde",
+          "expiresAtEpochMs": 1900000001000
+        }
+      },
+      "generate": [
+        {
+          "request": {
+            "contractVersion": "remote-v1",
+            "sessionToken": "3e4f5a6b-7c8d-49e0-af12-3456789abcde",
+            "idempotencyKey": "answer-replay-1",
+            "currentQuestion": "What are your support hours?",
+            "messages": [
+              { "role": "user", "content": "What are your support hours?" }
+            ],
+            "remainingMs": 29000
+          },
+          "response": {
+            "contractVersion": "remote-v1",
+            "ok": true,
+            "response": {
+              "answer": "Support is available every weekday.",
+              "answerable": true,
+              "sources": [
+                {
+                  "entryId": "faq-hours",
+                  "topic": "Support hours",
+                  "url": "https://example.com/support-hours"
+                }
+              ],
+              "responseType": "kb_answer"
+            }
+          }
+        },
+        {
+          "request": {
+            "contractVersion": "remote-v1",
+            "sessionToken": "3e4f5a6b-7c8d-49e0-af12-3456789abcde",
+            "idempotencyKey": "answer-replay-1",
+            "currentQuestion": "What are your support hours?",
+            "messages": [
+              { "role": "user", "content": "What are your support hours?" }
+            ],
+            "remainingMs": 28000
+          },
+          "response": {
+            "contractVersion": "remote-v1",
+            "ok": true,
+            "response": {
+              "answer": "Support is available every weekday.",
+              "answerable": true,
+              "sources": [
+                {
+                  "entryId": "faq-hours",
+                  "topic": "Support hours",
+                  "url": "https://example.com/support-hours"
+                }
+              ],
+              "responseType": "kb_answer"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "errorCatalog": [
+    "no_match",
+    "expired_token",
+    "quota_exceeded",
+    "kill_switch",
+    "invalid_contract",
+    "deadline_exceeded",
+    "retrieval_failed",
+    "generation_failed"
+  ]
+}

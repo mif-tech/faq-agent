@@ -1,0 +1,205 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: MIF FAQ Chat Free - standalone public FAQ sample
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Timeout: 30
+    MemorySize: 256
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        DYNAMODB_ENDPOINT: !Ref DynamoDBEndpoint
+        DYNAMODB_TABLE_PREFIX: !Ref Environment
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: '1'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+    Description: Prefix used for the three FAQ DynamoDB tables
+
+  DynamoDBEndpoint:
+    Type: String
+    Default: ''
+    Description: DynamoDB Local endpoint; leave empty for AWS
+
+  FaqPortsProfile:
+    Type: String
+    Default: free
+    AllowedValues:
+      - free
+      - production
+    Description: The public package defaults to its free lexical retrieval profile
+
+  AnthropicApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Optional API key; empty uses the deterministic grounded demo generator
+
+  FaqChatCorsOrigin:
+    Type: String
+    Default: '*'
+    Description: Exact browser origin for deployment; wildcard is intended for local trial only
+
+Resources:
+  FaqHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Environment
+      CorsConfiguration:
+        AllowOrigins:
+          - !Ref FaqChatCorsOrigin
+        AllowMethods:
+          - POST
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+      RouteSettings:
+        'POST /faq-chat':
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
+
+  SettingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Environment}-Settings
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: key
+          AttributeType: S
+      KeySchema:
+        - AttributeName: key
+          KeyType: HASH
+
+  KnowledgeEntriesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Environment}-KnowledgeEntries
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: entryId
+          AttributeType: S
+        - AttributeName: topicKey
+          AttributeType: S
+        - AttributeName: syncQueueStatus
+          AttributeType: S
+        - AttributeName: updatedAt
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+        - AttributeName: status
+          AttributeType: S
+      KeySchema:
+        - AttributeName: entryId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: topicKey-index
+          KeySchema:
+            - AttributeName: topicKey
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: syncQueueStatus-updatedAt-index
+          KeySchema:
+            - AttributeName: syncQueueStatus
+              KeyType: HASH
+            - AttributeName: updatedAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: category-status-index
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+            - AttributeName: status
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  FaqQaLogsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub ${Environment}-FaqQaLogs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: dateBucket
+          AttributeType: S
+        - AttributeName: ts
+          AttributeType: S
+      KeySchema:
+        - AttributeName: dateBucket
+          KeyType: HASH
+        - AttributeName: ts
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      # This free stack intentionally has no StreamSpecification or archive/notification worker.
+
+  FaqChatFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${Environment}-faq-chat-free
+      CodeUri: functions/faq-chat/
+      Handler: bootstrap.handler
+      Timeout: 28
+      Description: Standalone public FAQ using the free retrieval and generation adapters
+      Environment:
+        Variables:
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          FAQ_PORTS_PROFILE: !Ref FaqPortsProfile
+          FAQ_CORS_ORIGIN: !Ref FaqChatCorsOrigin
+      Events:
+        FaqChatApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /faq-chat
+            Method: POST
+        FaqChatOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /faq-chat
+            Method: OPTIONS
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Environment}-KnowledgeEntries
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Environment}-Settings
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${Environment}-FaqQaLogs
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - bootstrap.ts
+        External:
+          - '@aws-sdk/*'
+
+Outputs:
+  FaqApiUrl:
+    Description: FAQ API base URL
+    Value: !Sub https://${FaqHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}

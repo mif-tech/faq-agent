@@ -1,0 +1,27 @@
+{
+  "name": "mif-faq-chat-free-lambda",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "sam build",
+    "local:api": "sam local start-api --config-env local",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/faq-chat-envelope.test.mjs tests/faq-chat-eval-runner.test.mjs tests/faq-chat-eval-scoring.test.mjs tests/faq-chat-free-generation.test.mjs tests/faq-chat-free-retrieval.test.mjs tests/faq-chat-handler.test.mjs tests/faq-chat-iam-boundary.test.mjs tests/faq-chat-lite-adapters.test.mjs tests/faq-chat-remote-wire.test.mjs tests/faq-chat-stub-adapter.test.mjs tests/faq-local-scripts.test.mjs",
+    "eval:mock": "node eval/faq-chat/run-eval.mjs --mode mock --runs 1"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/lib-dynamodb": "^3.700.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.145",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.2",
+    "typescript": "^5.7.0"
+  }
+}

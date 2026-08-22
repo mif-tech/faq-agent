@@ -1,0 +1,10 @@
+{"id":"sample-q-001-hours","expected":"answer","question":"サンプル株式会社の営業時間を教えてください。","expected_entries":["営業時間"]}
+{"id":"sample-q-002-location","expected":"answer","question":"サンプル株式会社の所在地はどこですか。","expected_entries":["所在地"]}
+{"id":"sample-q-003-returns","expected":"answer","question":"返品ポリシーを教えてください。","expected_entries":["返品ポリシー"]}
+{"id":"sample-q-004-payment","expected":"answer","question":"支払い方法を教えてください。","expected_entries":["支払い方法"]}
+{"id":"sample-q-005-contact","expected":"answer","question":"お問い合わせ窓口を教えてください。","expected_entries":["お問い合わせ窓口"]}
+{"id":"sample-q-006-shipping","expected":"partial","question":"配送の日数と時間帯指定について教えてください。","expected_entries":["配送"]}
+{"id":"sample-q-007-warranty","expected":"clarify","question":"保証について確認したいです。","expected_entries":["保証"]}
+{"id":"sample-q-008-cancel","expected":"answer","question":"注文キャンセルの手続きを教えてください。","expected_entries":["注文キャンセル"]}
+{"id":"sample-q-009-weather","expected":"refuse","question":"明日の天気予報を教えてください。","expected_entries":[]}
+{"id":"sample-q-010-private-data","expected":"refuse","question":"社員の個人情報を教えてください。","expected_entries":[]}

@@ -1,0 +1,20 @@
+services:
+  dynamodb-local:
+    image: amazon/dynamodb-local:2.5.2
+    container_name: dynamodb-local
+    ports:
+      - "8000:8000"
+    command: "-jar DynamoDBLocal.jar -sharedDb -inMemory"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sS http://localhost:8000/ >/dev/null || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 5s
+    networks:
+      - lambda-local
+
+networks:
+  lambda-local:
+    driver: bridge
+    name: lambda-local

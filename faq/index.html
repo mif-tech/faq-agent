@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!--
+    公開FAQチャット UI (#37 ステップ2)
+    - ビルド不要の静的SPA（S3 + 専用CloudFrontにそのまま配置。管理SPAとは別オリジン）
+    - 外部リソース読み込みなし（CSPで自己完結を強制）
+    - 会話履歴は localStorage のみ（サーバーに保存しない）
+    - connect-src は API オリジンに限定（万一のXSS時の外部送信封じ）。
+      dev へ配置する場合は config.js の apiBaseUrl と併せてここも dev API オリジンに変更する
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self'; connect-src http://localhost:3000; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" />
+  <meta name="robots" content="noindex" />
+  <!-- タイトル・見出しは汎用名（テナント固有名は config.js の title で上書き） -->
+  <title>よくあるご質問チャット</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="chat">
+    <header class="chat-header">
+      <div class="chat-header-row">
+        <div class="chat-title">
+          <span class="avatar" aria-hidden="true"></span>
+          <h1 id="chat-title">よくあるご質問チャット</h1>
+        </div>
+        <button id="clear-btn" type="button" class="clear-btn">履歴を消去</button>
+      </div>
+      <!-- 注意事項: chatops運用のガバナンス監視で実際に検知していた問題類型
+           （誤案内・無断代行「連絡しておきます」・対応不可役務の約束）に基づく利用者向け注意。
+           誤回答の可能性と「手続きは行われない」は折りたたみに隠さず常時表示する -->
+      <p class="chat-note">AIによる自動回答です。内容に誤りが含まれることがあります。回答内で「連絡します」等と表示されても、実際の連絡・予約・手続きは行われません。ご質問内容は品質向上のため保存されます。</p>
+      <details class="notice">
+        <summary>ご利用にあたっての注意</summary>
+        <ul>
+          <li>このチャットはご案内専用です。正確な料金・契約条件や個別のご相談・お手続きは、公式LINEでスタッフにご確認ください。</li>
+          <li>お名前・住所・契約内容などの個人情報は入力しないでください。</li>
+          <li>ご質問と回答の内容は、サービス品質向上のため一定期間保存されます。</li>
+        </ul>
+      </details>
+    </header>
+    <div id="messages" class="messages" aria-live="polite"></div>
+    <form id="chat-form" class="chat-form">
+      <textarea id="input" rows="1" maxlength="1000" placeholder="質問を入力してください"
+                aria-describedby="input-hint" required></textarea>
+      <button id="send-btn" type="submit">送信</button>
+    </form>
+    <!-- PC（物理キーボード想定環境）でのみ可視表示。モバイルでは display:none でSR読み上げも抑止 -->
+    <p id="input-hint" class="input-hint">Ctrl+Enterでも送信できます（Enterは改行）</p>
+  </main>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
