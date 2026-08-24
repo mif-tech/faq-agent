@@ -976,7 +976,7 @@ test('remote profile: retrieve -> generate の公開 kb_answer を既存形状�
   assert.equal(ports.answerGeneration.calls.length, 0, 'local answer generation must stay bypassed');
   assert.equal(calls.retrieve.length, 1);
   assert.equal(calls.retrieve[0].question, question);
-  assert.equal(calls.retrieve[0].remainingMs, 22_500);
+  assert.equal(calls.retrieve[0].remainingMs, 27_500);
   assert.equal(calls.generate.length, 1);
   assert.match(calls.generate[0].idempotencyKey, /^[0-9a-f-]{36}$/u);
   assert.equal(calls.generate[0].currentQuestion, question);

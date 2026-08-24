@@ -40,6 +40,15 @@ export const REMOTE_V1_LIMITS = {
   sourceUrlCodePoints: 2_048,
 } as const;
 
+/**
+ * Server-side retrieve bound: remote-v1 servers cap retrieve execution at
+ * remainingMs minus this floor (non-positive → deadline_exceeded without calling
+ * the provider), reserving time for a later generate call. Session deadlines
+ * still use the full remainingMs. Single source for the facade default and the
+ * shell's entry guard so the two can never drift apart.
+ */
+export const REMOTE_V1_GENERATE_BUDGET_FLOOR_MS = 5_000;
+
 export const REMOTE_V1_RETRIEVE_ERROR_CODES = [
   'no_match',
   'quota_exceeded',

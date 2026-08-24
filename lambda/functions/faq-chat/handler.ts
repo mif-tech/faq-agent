@@ -47,7 +47,7 @@ import type {
 } from './ports/generation.js';
 import type { FaqRetrievalHints } from './ports/retrieval.js';
 import { boundPlanTexts } from '../../shared/search-plan-bounds.js';
-import { REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
+import { REMOTE_V1_GENERATE_BUDGET_FLOOR_MS, REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
 import {
   FAQ_RAG_CONTRACT_VERSION,
   type FaqRagError,
@@ -1431,11 +1431,11 @@ async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry:
 
 const REMOTE_RAG_DEFAULT_REMAINING_MS = 20_000;
 const REMOTE_RAG_MAX_REMAINING_MS = 60_000;
-// retrieve が渡された予算を使い切っても generate を開始できる最低枠。
-// Lambda応答処理用の MODEL_RESPONSE_RESERVE_MS とは別に確保する。
-// 5秒は暫定値（Lambda 残余がこの床+リザーブ未満だと retrieve を試さず技術 refuse になる
-// 閾値でもある）。kill switch 解除後に remote generate の実測 P50 が出たら見直すこと
-const REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS = 5_000;
+// retrieve が caller の総予算を使い切らず generate を開始できる最低枠。
+// facade の retrieve 実行 bound と殻の入口ガードだけに使い、remote-v1 remainingMs と
+// セッション期限には混入させない。Lambda応答用の MODEL_RESPONSE_RESERVE_MS とは別枠。
+// 出所は contract の REMOTE_V1_GENERATE_BUDGET_FLOOR_MS（facade 既定値と単一ソース）。
+const REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS = REMOTE_V1_GENERATE_BUDGET_FLOOR_MS;
 
 function remoteRagRemainingMs(context?: Context): number {
   const lambdaRemainingMs = context?.getRemainingTimeInMillis?.();
@@ -1858,10 +1858,9 @@ async function handleFaqRequest(
         return jsonResponse(200, response);
       };
 
-      const retrieveRemainingMs =
-        remoteRagRemainingMs(context) - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS;
+      const retrieveRemainingMs = remoteRagRemainingMs(context);
       let retrieveResponse: FaqRagRetrieveResponse;
-      if (retrieveRemainingMs <= 0) {
+      if (retrieveRemainingMs - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS <= 0) {
         retrieveResponse = {
           contractVersion: FAQ_RAG_CONTRACT_VERSION,
           ok: false,
