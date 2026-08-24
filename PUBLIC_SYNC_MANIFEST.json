@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.2.2-alpha",
-  "canonicalHead": "43c668f26ef040e3e8fd4a8452fc1bc05f5e1787",
+  "sourceRef": "v0.2.3-alpha",
+  "canonicalHead": "ddf182ce9003af6cf1c1667e46cc6d5e2cb8cc3e",
   "fileCount": 69,
   "files": [
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/contract.ts",
-      "sha256": "28daf9cabe699225617fb99f3b09c22c1ea59a8134c3f0e98defb899cc7033a1",
+      "sha256": "149ff4a091e17b431731c8657afc27d93dffff415b11f72263be023460b869e4",
       "origin": "allowlist"
     },
     {
@@ -156,7 +156,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/handler.ts",
-      "sha256": "cc83cf6310e2750f37fd12cd9cfc35b576af207dc6850405166cc9fc88c40987",
+      "sha256": "99545fd791f19e24f2aa7391399d95e845c32783d0c1c72a170aa9eeeee1b50d",
       "origin": "allowlist"
     },
     {
@@ -251,7 +251,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-handler.test.mjs",
-      "sha256": "97a1d79096cd6e353e85c42402e6384f53be8b57a52be85f1f8be8807dffe2fe",
+      "sha256": "dc76402183929066f4418fcd42a0755bf9b94db859c0eea6ff44c7ccf387fbd2",
       "origin": "allowlist"
     },
     {
