@@ -1,7 +1,7 @@
 # MIF Free Self-Hosted License
 
 License identifier: `LicenseRef-MIF-Free-Self-Hosted-1.0`
-Copyright (c) 2026 MIF Tech. All rights reserved.
+Copyright (c) 2026 MIF LLC. All rights reserved.
 Effective date: 2026-08-23
 
 ## Summary (informational only; the license text below controls)
@@ -9,7 +9,7 @@ Effective date: 2026-08-23
 - **Free** for one organization (or one sole proprietor) to view, copy, run, modify, and self-host the Software **for its own internal purposes**, anywhere in the world. Letting the users of your own products and services (other than the Software itself) ask questions through your own deployment, as customer support or information provision incidental to those products and services ("End-User Access"), is part of internal purposes.
 - **Not permitted without a separate commercial license**: redistributing the Software or any modified version to other organizations; offering it to other organizations as SaaS, hosting, or a managed service; deploying or operating it for multiple customers as an agency, reseller, or integrator; OEM, white-label, or embedding into a product you sell or distribute; or using it as the basis of a Competing Offering.
 - Provided "as is", with no warranty and no support. Governed by the laws of Japan.
-- Commercial licensing inquiries: https://mif-tech.com/
+- Commercial licensing inquiries: https://mifllc.com/contact/
 
 This is not an open-source license as defined by the Open Source Initiative. The English text below is the controlling text; a Japanese translation is provided for convenience (see Section 10).
 
@@ -80,7 +80,7 @@ This license is governed by and construed in accordance with the laws of Japan. 
 
 Each release of the Software is governed by the license text included with that release. The copyright holder may publish revised license terms, which apply only to releases first published under the revised text; releases already published remain subject to the text included with them.
 
-For commercial licensing, redistribution, OEM, or multi-customer agency use, contact the copyright holder through https://mif-tech.com/.
+For commercial licensing, redistribution, OEM, or multi-customer agency use, contact the copyright holder through https://mifllc.com/contact/.
 
 ### 10. Language
 
@@ -155,7 +155,7 @@ This license is written in English. The Japanese text below is a translation pro
 
 本ソフトウェアの各リリースには、そのリリースに同梱されたライセンス文が適用されます。著作権者は改訂したライセンス条件を公開することがありますが、改訂後の条件は、その改訂版ライセンス文の下で初めて公開される各リリースにのみ適用され、既に公開されたリリースには同梱された条件が引き続き適用されます。
 
-商用ライセンス、再配布、OEM、複数顧客への代理店利用に関するお問い合わせは、https://mif-tech.com/ から著作権者へ連絡してください。
+商用ライセンス、再配布、OEM、複数顧客への代理店利用に関するお問い合わせは、https://mifllc.com/contact/ から著作権者へ連絡してください。
 
 ### 10. 言語
 
