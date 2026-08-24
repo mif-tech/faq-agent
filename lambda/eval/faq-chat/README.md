@@ -20,6 +20,7 @@
 | `sample-episodes.jsonl` | 合成データの非 blocking 会話エピソード2本。mock の既定エピソードセット |
 | `sample-kb.json` | 合成データに対応する架空のKB。mock の既定KB |
 | `run-eval.mjs` | ランナー。Node 22+。api / recorded は追加依存なし、mock は開発依存の `esbuild` を実行時に遅延利用 |
+| `compare-parity.mjs` | production / remote の結果JSONを strict majority で比較する parity gate。追加依存なし |
 | `results/` | 実行結果の出力先（gitignore済み） |
 
 ⚠️ 結果JSONには回答本文（`trials[].answer`）が含まれる。録画JSONLでは質問本文をID参照へ置き換えるが、レスポンス本文は保存する。回答にも顧客固有情報が含まれうるため、**結果・録画とも非公開扱い**とし、`--out` / `--record` で `results/` の外に出したファイルを公開リポジトリへコミットしないこと。
@@ -47,6 +48,53 @@ HTTP失敗・非JSON・未知の `responseType`・`kb_answer` なのに本文空
 ## 使い方
 
 以下の例はリポジトリルートから `cd lambda` した状態で実行する。
+
+### 公開 eval の production / remote parity gate（#126）
+
+公開セット10件 + 2 episodes は、同じ合成KBを用意した **eval-public 専用構成**で実行する。remote 構成では runner の引数で tenant を渡すのではなく、FAQ shell に設定した eval-public 用 IAM role / ExternalId と MIF 側の role-to-tenant map によって `eval-public` が選択される。production 構成側にも同じ公開合成コーパスを用意すること。**eval-public 以外の実顧客KBは公開 `sample-*` fixture と内容が一致しないため、この parity eval の実行先にしない。**
+
+`--api` には `/faq-chat` を提供する FAQ API の stage / base URL を渡す（runner が `/faq-chat` を付加する）。remote 構成でも MIF managed RAG API の `/v1/retrieve` / `/v1/generate` を直接指定しない。
+
+```powershell
+# production profile の FAQ API
+$productionFaqApi = 'https://<production-faq-api-stage>'
+node eval/faq-chat/run-eval.mjs `
+  --mode api `
+  --api $productionFaqApi `
+  --set eval/faq-chat/sample-set.jsonl `
+  --episodes eval/faq-chat/sample-episodes.jsonl `
+  --runs 3 `
+  --concurrency 1 `
+  --out eval/faq-chat/results/parity-production.json
+
+# remote profile の FAQ API（MIF 側 tenant = eval-public）
+$remoteFaqApi = 'https://<remote-faq-api-stage>'
+node eval/faq-chat/run-eval.mjs `
+  --mode api `
+  --api $remoteFaqApi `
+  --set eval/faq-chat/sample-set.jsonl `
+  --episodes eval/faq-chat/sample-episodes.jsonl `
+  --runs 3 `
+  --concurrency 1 `
+  --out eval/faq-chat/results/parity-remote.json
+
+# production を baseline、remote を candidate として比較
+node eval/faq-chat/compare-parity.mjs `
+  --baseline eval/faq-chat/results/parity-production.json `
+  --candidate eval/faq-chat/results/parity-remote.json
+```
+
+parity 実行では `--ids` を使わない。comparator 自身が同梱 `sample-set.jsonl` / `sample-episodes.jsonl` の正規化済みhash、10件 / 2 episodes のID、全4turn、`runs=3` に入力を束縛するため、両側で同じsubsetを指定しても fail する。成功サマリは `questions=10 episodes=2 episode_turns=4` となる。
+
+comparator の入力は `run-eval.mjs --out` の結果JSONであり、再生用の `--record` JSONLではない。まず両入力が `mode: api` で、質問 / episode の fixture hash、`scoringVersion`、`runs` が一致し、hash と runs が上記の公開fixture契約にも一致することを検証する。そのうえで次をすべて満たした場合だけ exit 0 になる。
+
+- 質問IDとepisode IDが同梱公開fixtureの集合と完全一致し、重複・欠落・過剰がない
+- 各質問で technical / invalid trial がなく、**`classifyActual` の派生クラス**（`scope_fallback` を素の `refuse` と区別する。scoring.mjs の passOf 4象限・episode 側と対称）の同じ値が `runs` の厳密過半数（`count * 2 > runs`）を占め、その majority が production / remote で一致する
+- episode の各turnで `trajectories[].turns[].actual`（実測route）に technical / invalid がなく、`runs` を分母とする厳密過半数routeが成立し、そのrouteが production / remote で一致する。早期終了で公開fixture上のturnが一度も実行されなければ欠落、実行数が足りず過半数に届かなければ majority 不成立として失敗する
+
+trial 単位の完全一致は要求しない。technical / invalid、strict majority 不成立、ID / turn の集合差、majority の不一致は **exit 1（parity 退行）**。失敗出力はID（episodeはturn番号付き）と種別だけで、質問文・user発話・回答本文は表示しない。**exit 2 は評価基盤エラー**（引数不正・入力ファイル不在/破損・repo 同梱の公開 fixture 自体の破損・同一ファイルの二重指定・**結果 JSON のメタデータ不一致** = fixture hash / runs / mode / scoringVersion の実行手順ミス）で、run-eval.mjs の exit code 契約と整合する。
+
+切り分けメモ: 両構成が同じ turn で一貫して失敗した場合、runner の critical turn 早期打ち切りにより `missing_episode_turn` / `no_route_majority` で fail する。これは「parity が壊れた」のではなく「両側とも品質退行した」可能性があるため、失敗種別がこの2つのときは各構成の単独 eval 結果（confusion matrix）を先に確認する。
 
 ### モード
 

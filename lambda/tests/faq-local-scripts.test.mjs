@@ -131,6 +131,37 @@ test('FAQ startup connects SAM and DynamoDB on the shared network in free mode',
   assert.match(startup, /FAQ_PORTS_PROFILE["']?\s*(?::|=)\s*["']?free/);
 });
 
+test('FAQ startup injects one exact local table namespace into the lite runtime', () => {
+  const startup = readRepoFile('scripts/faq-local-up.sh');
+  const environmentBlock = startup.match(
+    /const faqEnvironment = \{(?<body>[\s\S]*?)\n\};/u
+  )?.groups?.body;
+  assert.ok(environmentBlock, 'faqEnvironment object must exist');
+
+  const stringProperty = (name) => {
+    const match = environmentBlock.match(
+      new RegExp(`^\\s*${name}:\\s*['"]([^'"]+)['"],?\\s*$`, 'mu')
+    );
+    assert.ok(match, `${name} must be a string literal in faqEnvironment`);
+    return match[1];
+  };
+
+  const prefix = stringProperty('FAQ_TABLE_NAME_PREFIX');
+  assert.equal(prefix, 'dev');
+  assert.deepEqual(
+    {
+      Settings: stringProperty('FAQ_SETTINGS_TABLE_NAME'),
+      KnowledgeEntries: stringProperty('FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME'),
+      FaqQaLogs: stringProperty('FAQ_QA_LOGS_TABLE_NAME'),
+    },
+    {
+      Settings: `${prefix}-Settings`,
+      KnowledgeEntries: `${prefix}-KnowledgeEntries`,
+      FaqQaLogs: `${prefix}-FaqQaLogs`,
+    }
+  );
+});
+
 test('deprecated emulator references are absent outside historical documents', () => {
   assert.deepEqual(findForbiddenReferences(), []);
 });

@@ -11,8 +11,45 @@ import { build } from 'esbuild';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LAMBDA_ROOT = path.resolve(HERE, '..');
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'faq-lite-adapters-test-'));
+const TABLE_ENV_NAMES = [
+  'FAQ_TABLE_NAME_PREFIX',
+  'FAQ_SETTINGS_TABLE_NAME',
+  'FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME',
+  'FAQ_QA_LOGS_TABLE_NAME',
+];
 
 after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+
+function tableEnvironment(prefix = 'prod-candidate') {
+  return {
+    FAQ_TABLE_NAME_PREFIX: prefix,
+    FAQ_SETTINGS_TABLE_NAME: `${prefix}-Settings`,
+    FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: `${prefix}-KnowledgeEntries`,
+    FAQ_QA_LOGS_TABLE_NAME: `${prefix}-FaqQaLogs`,
+  };
+}
+
+async function withTableEnvironment(environment, callback) {
+  const previous = Object.fromEntries(
+    TABLE_ENV_NAMES.map((name) => [name, process.env[name]])
+  );
+
+  for (const name of TABLE_ENV_NAMES) {
+    const value = environment[name];
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  try {
+    return await callback();
+  } finally {
+    for (const name of TABLE_ENV_NAMES) {
+      const value = previous[name];
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
 
 async function bundle(entryPoint, outfile, setup) {
   await build({
@@ -28,10 +65,256 @@ async function bundle(entryPoint, outfile, setup) {
   return import(`${pathToFileURL(outfile).href}?v=${Date.now()}`);
 }
 
-test('public production adapter keeps Settings and conditional Q&A storage contracts', async () => {
+test('lite DynamoDB resolves and uses only exact candidate table names', async () => {
   const state = {
+    calls: [],
+    clientConfigs: [],
+    documentClientOptions: [],
+    responses: {
+      GetCommand: { Item: { key: 'faq_chat' } },
+      ScanCommand: { Items: [{ entryId: 'candidate-entry' }] },
+      PutCommand: {},
+    },
+  };
+  globalThis.__faqLiteDynamoState = state;
+
+  const candidateEnvironment = tableEnvironment();
+  const module = await withTableEnvironment(candidateEnvironment, () =>
+    bundle(
+      path.join(
+        LAMBDA_ROOT,
+        'functions',
+        'faq-chat',
+        'infra',
+        'lite-dynamodb.ts'
+      ),
+      path.join(tempRoot, 'lite-dynamodb.mjs'),
+      (esbuild) => {
+        esbuild.onResolve(
+          { filter: /^@aws-sdk\/client-dynamodb$/ },
+          () => ({ path: 'client-dynamodb', namespace: 'lite-test' })
+        );
+        esbuild.onResolve(
+          { filter: /^@aws-sdk\/lib-dynamodb$/ },
+          () => ({ path: 'lib-dynamodb', namespace: 'lite-test' })
+        );
+        esbuild.onLoad(
+          { filter: /^client-dynamodb$/, namespace: 'lite-test' },
+          () => ({
+            contents: `
+              export class DynamoDBClient {
+                constructor(config) {
+                  this.config = config;
+                  globalThis.__faqLiteDynamoState.clientConfigs.push(config);
+                }
+              }
+            `,
+            loader: 'js',
+          })
+        );
+        esbuild.onLoad(
+          { filter: /^lib-dynamodb$/, namespace: 'lite-test' },
+          () => ({
+            contents: `
+              class StubCommand {
+                constructor(kind, input) {
+                  this.kind = kind;
+                  this.input = input;
+                }
+              }
+              export class GetCommand extends StubCommand {
+                constructor(input) { super('GetCommand', input); }
+              }
+              export class PutCommand extends StubCommand {
+                constructor(input) { super('PutCommand', input); }
+              }
+              export class ScanCommand extends StubCommand {
+                constructor(input) { super('ScanCommand', input); }
+              }
+              export class DynamoDBDocumentClient {
+                static from(client, options) {
+                  globalThis.__faqLiteDynamoState.documentClientOptions.push({
+                    clientConfig: client.config,
+                    options,
+                  });
+                  return {
+                    async send(command) {
+                      globalThis.__faqLiteDynamoState.calls.push({
+                        kind: command.kind,
+                        input: command.input,
+                      });
+                      return globalThis.__faqLiteDynamoState.responses[command.kind] ?? {};
+                    },
+                  };
+                }
+              }
+            `,
+            loader: 'js',
+          })
+        );
+      }
+    )
+  );
+
+  assert.deepEqual(module.LiteTableNames, {
+    Settings: 'prod-candidate-Settings',
+    KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
+    FaqQaLogs: 'prod-candidate-FaqQaLogs',
+  });
+  assert.equal(Object.isFrozen(module.LiteTableNames), true);
+  assert.throws(
+    () => {
+      module.LiteTableNames.Settings = 'prod-Settings';
+    },
+    TypeError
+  );
+  assert.equal(module.LiteTableNames.Settings, 'prod-candidate-Settings');
+
+  assert.deepEqual(module.resolveLiteTableNames(candidateEnvironment), {
+    Settings: 'prod-candidate-Settings',
+    KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
+    FaqQaLogs: 'prod-candidate-FaqQaLogs',
+  });
+  assert.equal(
+    Object.isFrozen(module.resolveLiteTableNames(candidateEnvironment)),
+    true
+  );
+
+  assert.throws(
+    () => module.resolveLiteTableNames({}),
+    /FAQ_TABLE_NAME_PREFIX must be set to a non-empty value/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        FAQ_TABLE_NAME_PREFIX: 'prod-candidate',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must be set to a non-empty value/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: undefined,
+      }),
+    /FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME must be set to a non-empty value/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        DYNAMODB_TABLE_PREFIX: 'dev',
+      }),
+    /FAQ_TABLE_NAME_PREFIX must be set to a non-empty value/,
+    'legacy prefix must not restore an implicit dev fallback'
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: '',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must be set to a non-empty value/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_TABLE_NAME_PREFIX: ' prod-candidate',
+      }),
+    /FAQ_TABLE_NAME_PREFIX must not contain leading or trailing whitespace/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: 'prod-candidate-Settings ',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must not contain leading or trailing whitespace/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: 'prod-candidate-Settings!',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must be a valid DynamoDB table name/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: 'ab',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must be a valid DynamoDB table name/
+  );
+
+  const longEnvironment = tableEnvironment('x'.repeat(250));
+  assert.throws(
+    () => module.resolveLiteTableNames(longEnvironment),
+    /FAQ_SETTINGS_TABLE_NAME must be a valid DynamoDB table name/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: 'prod-other-Settings',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must exactly match prod-candidate-Settings/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_SETTINGS_TABLE_NAME: 'prod-candidate-KnowledgeEntries',
+        FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: 'prod-candidate-Settings',
+      }),
+    /FAQ_SETTINGS_TABLE_NAME must exactly match prod-candidate-Settings/
+  );
+  assert.throws(
+    () =>
+      module.resolveLiteTableNames({
+        ...candidateEnvironment,
+        FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: 'prod-candidate-Settings',
+      }),
+    /FAQ table names must be distinct and must not be interchanged/
+  );
+
+  assert.deepEqual(
+    await module.getItem(module.LiteTableNames.Settings, { key: 'faq_chat' }),
+    { key: 'faq_chat' }
+  );
+  assert.deepEqual(
+    await module.scanAll(module.LiteTableNames.KnowledgeEntries),
+    [{ entryId: 'candidate-entry' }]
+  );
+  await module.putItem(module.LiteTableNames.FaqQaLogs, { ts: 'candidate-log' });
+
+  assert.deepEqual(
+    state.calls.map(({ kind, input }) => ({
+      kind,
+      tableName: input.TableName,
+    })),
+    [
+      { kind: 'GetCommand', tableName: 'prod-candidate-Settings' },
+      { kind: 'ScanCommand', tableName: 'prod-candidate-KnowledgeEntries' },
+      { kind: 'PutCommand', tableName: 'prod-candidate-FaqQaLogs' },
+    ]
+  );
+  assert.equal(
+    state.calls.every(({ input }) =>
+      input.TableName.startsWith('prod-candidate-')
+    ),
+    true
+  );
+});
+
+test('public production adapter delegates remote creation and keeps free/storage contracts', async () => {
+  const state = {
+    freeCalls: [],
     getCalls: [],
     putCalls: [],
+    remoteCalls: 0,
+    remotePort: { kind: 'remote-http-client' },
     settingRow: { key: 'faq_chat', value: { enabled: true, fallbackMessage: 'fallback' } },
   };
   globalThis.__faqLiteStorageState = state;
@@ -48,26 +331,39 @@ test('public production adapter keeps Settings and conditional Q&A storage contr
         path: 'free-kb',
         namespace: 'lite-test',
       }));
+      esbuild.onResolve({ filter: /remote[\\/]http-client\.js$/ }, () => ({
+        path: 'remote-http-client',
+        namespace: 'lite-test',
+      }));
       esbuild.onResolve({ filter: /infra[\\/]lite-dynamodb\.js$/ }, () => ({
         path: 'lite-dynamodb',
         namespace: 'lite-test',
       }));
       esbuild.onLoad({ filter: /^free-index$/, namespace: 'lite-test' }, () => ({
-        contents: `export function createFreeFaqPorts() {
+        contents: `export function createFreeFaqPorts(options) {
+          globalThis.__faqLiteStorageState.freeCalls.push(options.kbSource.kind);
           return { retrieval: {}, answerGeneration: {}, smalltalkGeneration: {},
             answerPrompt: {}, defaultModel: 'free-test' };
         }`,
         loader: 'js',
       }));
       esbuild.onLoad({ filter: /^free-kb$/, namespace: 'lite-test' }, () => ({
-        contents: 'export const dynamoDbFaqKbSource = {};',
+        contents: "export const dynamoDbFaqKbSource = { kind: 'lite-dynamodb-kb' };",
+        loader: 'js',
+      }));
+      esbuild.onLoad({ filter: /^remote-http-client$/, namespace: 'lite-test' }, () => ({
+        contents: `export function createRemoteFaqRagHttpClient() {
+          globalThis.__faqLiteStorageState.remoteCalls += 1;
+          return globalThis.__faqLiteStorageState.remotePort;
+        }`,
         loader: 'js',
       }));
       esbuild.onLoad({ filter: /^lite-dynamodb$/, namespace: 'lite-test' }, () => ({
         contents: `
           export const LiteTableNames = {
-            Settings: 'dev-Settings', KnowledgeEntries: 'dev-KnowledgeEntries',
-            FaqQaLogs: 'dev-FaqQaLogs'
+            Settings: 'prod-candidate-Settings',
+            KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
+            FaqQaLogs: 'prod-candidate-FaqQaLogs'
           };
           export async function getItem(table, key) {
             globalThis.__faqLiteStorageState.getCalls.push({ table, key });
@@ -82,10 +378,16 @@ test('public production adapter keeps Settings and conditional Q&A storage contr
     }
   );
 
+  assert.equal(module.createProductionRemoteFaqRagPort(), state.remotePort);
+  assert.equal(state.remoteCalls, 1);
+
   const adapters = module.createProductionFaqAdapters();
+  assert.equal(adapters.defaultModel, 'free-test');
+  assert.deepEqual(state.freeCalls, ['lite-dynamodb-kb']);
+  assert.equal(state.remoteCalls, 1, 'free factory must not initialize the remote client');
   assert.deepEqual(await adapters.storage.loadSettings(), state.settingRow.value);
   assert.deepEqual(state.getCalls, [
-    { table: 'dev-Settings', key: { key: 'faq_chat' } },
+    { table: 'prod-candidate-Settings', key: { key: 'faq_chat' } },
   ]);
 
   const record = {
@@ -106,7 +408,7 @@ test('public production adapter keeps Settings and conditional Q&A storage contr
   await adapters.storage.putQaLog(record);
   assert.deepEqual(state.putCalls, [
     {
-      table: 'dev-FaqQaLogs',
+      table: 'prod-candidate-FaqQaLogs',
       item: record,
       options: {
         conditionExpression: 'attribute_not_exists(#ts)',
@@ -147,7 +449,9 @@ test('public KB source filters active public default-agent rows twice', async ()
       }));
       esbuild.onLoad({ filter: /^lite-dynamodb$/, namespace: 'lite-test' }, () => ({
         contents: `
-          export const LiteTableNames = { KnowledgeEntries: 'dev-KnowledgeEntries' };
+          export const LiteTableNames = {
+            KnowledgeEntries: 'prod-candidate-KnowledgeEntries'
+          };
           export async function scanAll(table, options) {
             globalThis.__faqLiteKbState.calls.push({ table, options });
             return globalThis.__faqLiteKbState.rows;
@@ -164,7 +468,7 @@ test('public KB source filters active public default-agent rows twice', async ()
   ]);
   assert.deepEqual(state.calls, [
     {
-      table: 'dev-KnowledgeEntries',
+      table: 'prod-candidate-KnowledgeEntries',
       options: {
         filterExpression:
           '#status = :active AND #visibility = :public AND ' +
