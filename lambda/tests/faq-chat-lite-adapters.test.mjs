@@ -315,6 +315,7 @@ test('public production adapter delegates remote creation and keeps free/storage
     putCalls: [],
     remoteCalls: 0,
     remotePort: { kind: 'remote-http-client' },
+    smalltalkPort: { kind: 'free-smalltalk-port' },
     settingRow: { key: 'faq_chat', value: { enabled: true, fallbackMessage: 'fallback' } },
   };
   globalThis.__faqLiteStorageState = state;
@@ -342,7 +343,8 @@ test('public production adapter delegates remote creation and keeps free/storage
       esbuild.onLoad({ filter: /^free-index$/, namespace: 'lite-test' }, () => ({
         contents: `export function createFreeFaqPorts(options) {
           globalThis.__faqLiteStorageState.freeCalls.push(options.kbSource.kind);
-          return { retrieval: {}, answerGeneration: {}, smalltalkGeneration: {},
+          return { retrieval: {}, answerGeneration: {},
+            smalltalkGeneration: globalThis.__faqLiteStorageState.smalltalkPort,
             answerPrompt: {}, defaultModel: 'free-test' };
         }`,
         loader: 'js',
@@ -383,6 +385,7 @@ test('public production adapter delegates remote creation and keeps free/storage
 
   const adapters = module.createProductionFaqAdapters();
   assert.equal(adapters.defaultModel, 'free-test');
+  assert.strictEqual(adapters.smalltalkGeneration, state.smalltalkPort);
   assert.deepEqual(state.freeCalls, ['lite-dynamodb-kb']);
   assert.equal(state.remoteCalls, 1, 'free factory must not initialize the remote client');
   assert.deepEqual(await adapters.storage.loadSettings(), state.settingRow.value);

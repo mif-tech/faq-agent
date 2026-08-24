@@ -28,6 +28,10 @@ curl -s -X POST http://localhost:3000/faq-chat \
 
 API キーを設定しなければ、外部 AI API を呼ばない決定的なキーワードモードで回答します。任意で起動前に `ANTHROPIC_API_KEY` を設定すると、簡素なグラウンディング用プロンプトで回答生成を試せます。利用料金と送信データは API 提供者の条件に従います。
 
+Settings の `smalltalkMode` は既定で `template_only` です。`smalltalkMode=generated` は `ANTHROPIC_API_KEY` がある場合だけ動作し、キーがなければ既存の KB 経路へ fail closed します。有効化すると、通常の FAQ 質問でもルーターとして LLM 呼び出しが1回追加され、純粋な雑談では最大3回（router → generator → judge）の追加 LLM 呼び出しが発生します。コスト事故を避けるため、低い spend limit を設定した専用キーと請求アラートを用意してから有効化することを推奨します。
+
+テナント固有の業務語彙（自社の製品名・サービス名など）は公開版に含まれません。環境変数 `FAQ_GUARD_BUSINESS_TERMS`（カンマ区切り、例: `MyProduct,マイサービス`）を設定すると、生成可否の決定的ガード（has_business_topic）が自社語彙にも反応し、業務話題が雑談として応答されるのをより確実に防げます。
+
 静的 UI も確認する場合は API を起動したまま、別のターミナルで次を実行し、`http://localhost:8080` を開きます。
 
 ```bash
@@ -81,7 +85,7 @@ npm run eval:mock
 ## 既知の制約
 
 - 検索は小規模 KB 向けの文字 bigram とキーワードだけです。埋め込み検索や高度なランキングは含みません。
-- handler 内の smalltalk 分岐は正本との互換性のため残っています。free profile は `template_only` を前提とし、自由な smalltalk 生成は提供しません。
+- handler 内の smalltalk 分岐は正本との互換性のため残っています。free profile の既定は `template_only` で、`smalltalkMode=generated` は `ANTHROPIC_API_KEY` を持つ環境でのみ opt-in できます。
 - 同梱データは架空のサンプルです。非公開の評価質問、会話、結果、顧客データは含みません。
 - Q&A は接触先らしき文字列をマスクして `FaqQaLogs` に保存し、`ttl` で180日後を期限にします。ただし DynamoDB TTL の削除時刻は厳密ではありません。
 - Q&A ログの Streams consumer、通知、恒久アーカイブはこの alpha 版に含みません。テンプレートも Streams を有効化しません。

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.2.1-alpha",
-  "canonicalHead": "b4ea89548618b352fbb529555bc6e8f4d1f0054c",
-  "fileCount": 68,
+  "sourceRef": "v0.2.2-alpha",
+  "canonicalHead": "43c668f26ef040e3e8fd4a8452fc1bc05f5e1787",
+  "fileCount": 69,
   "files": [
     {
       "path": ".gitattributes",
@@ -85,6 +85,11 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/functions/faq-chat/adapters/free/anthropic-smalltalk.ts",
+      "sha256": "7f3f320672dcaf7a24edc5bf9a735f73f8853993248ccd987a30c9e03b6ffef5",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/functions/faq-chat/adapters/free/dynamodb-entries.ts",
       "sha256": "fb2d7ae0bb0a70f17ea5574d6c323f48b97add9a14e8c4fd11eed622130c3994",
       "origin": "overlay"
@@ -96,7 +101,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/index.ts",
-      "sha256": "9f1d791983aef79b0979d9c9da91c52ce2ed201ba53b25bb56bc1574cdfdf6b5",
+      "sha256": "0e32c72f1f1d448f1f72d86ac23d711e1098c2df71c66dc9e77314fe4ff3897e",
       "origin": "allowlist"
     },
     {
@@ -236,7 +241,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-free-generation.test.mjs",
-      "sha256": "939836ad6e9e2bb36c8bdd0722987bda415a67c65fb11a75aab80b66f5e54d45",
+      "sha256": "f9d83ea9615581c214f2f37c62909ba1870116936bdde88c4a0a455ed8adb79c",
       "origin": "allowlist"
     },
     {
@@ -246,7 +251,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-handler.test.mjs",
-      "sha256": "3ce739e552e14420d8aa4c6180fe3183875aeaabe8b4018f9fd7c2ae75f7ba9c",
+      "sha256": "97a1d79096cd6e353e85c42402e6384f53be8b57a52be85f1f8be8807dffe2fe",
       "origin": "allowlist"
     },
     {
@@ -256,7 +261,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-adapters.test.mjs",
-      "sha256": "9add06948fcee981f7c11d20838b641862788e693036329edf7cb5ea578fdb69",
+      "sha256": "cc074012997e89437fc78538a1bb5a1c0383069f673f379476cbf254080549b1",
       "origin": "overlay"
     },
     {
@@ -316,7 +321,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "c2b6e6088da3d543cd89a47a7569e3d05fc68d4d869154e0240ae2c6676af07b",
+      "sha256": "713e40ae0e76016ff9ece7ba6c482c76843722aa107fc5e911e2be54407a28c1",
       "origin": "overlay"
     },
     {

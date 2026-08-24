@@ -314,7 +314,7 @@ test('free ports: generated smalltalk が無効でも router null からKB経路
   assert.equal(lastFaqMetric(captured).guard_reject_reason, 'router_error');
 });
 
-test('free factory は model・grounded/Anthropic・無効smalltalkをcompositionする', async () => {
+test('free factory は model・grounded/Anthropic・key連動smalltalkをcompositionする', async () => {
   const originalFreeModel = process.env.FAQ_FREE_MODEL;
   try {
     process.env.FAQ_FREE_MODEL = 'custom-free-model';
