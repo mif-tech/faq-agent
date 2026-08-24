@@ -46,6 +46,16 @@ import type {
   FaqGenerationResult,
 } from './ports/generation.js';
 import type { FaqRetrievalHints } from './ports/retrieval.js';
+import { boundPlanTexts } from '../../shared/search-plan-bounds.js';
+import { REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
+import {
+  FAQ_RAG_CONTRACT_VERSION,
+  type FaqRagError,
+  type FaqRagGenerateResponse,
+  type FaqRagPort,
+  type FaqRagPublicResponse,
+  type FaqRagRetrieveResponse,
+} from './ports/rag.js';
 
 // サーバー側の履歴ガード既定値（Settings で調整可・上限はハードキャップ）
 const DEFAULT_MAX_HISTORY = 6;
@@ -1419,10 +1429,119 @@ async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry:
   }
 }
 
+const REMOTE_RAG_DEFAULT_REMAINING_MS = 20_000;
+const REMOTE_RAG_MAX_REMAINING_MS = 60_000;
+// retrieve が渡された予算を使い切っても generate を開始できる最低枠。
+// Lambda応答処理用の MODEL_RESPONSE_RESERVE_MS とは別に確保する。
+// 5秒は暫定値（Lambda 残余がこの床+リザーブ未満だと retrieve を試さず技術 refuse になる
+// 閾値でもある）。kill switch 解除後に remote generate の実測 P50 が出たら見直すこと
+const REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS = 5_000;
+
+function remoteRagRemainingMs(context?: Context): number {
+  const lambdaRemainingMs = context?.getRemainingTimeInMillis?.();
+  if (typeof lambdaRemainingMs !== 'number') return REMOTE_RAG_DEFAULT_REMAINING_MS;
+  return Math.min(
+    REMOTE_RAG_MAX_REMAINING_MS,
+    Math.max(0, Math.floor(lambdaRemainingMs) - MODEL_RESPONSE_RESERVE_MS)
+  );
+}
+
+interface BoundedRemoteRetrievalHints {
+  hints: FaqRetrievalHints | undefined;
+  /** 有界化で落ちた件数（truncate で残った要素は含まない）。値そのものは観測に載せない */
+  droppedCount: number;
+  /** NFKC 重複除去後の有界化前件数。0 なら「plan なし」、>0 かつ hints なしなら「全滅」 */
+  rawCount: number;
+}
+
+function boundRemoteRetrievalHints(
+  searchPlan: FaqRetrievalHints | null
+): BoundedRemoteRetrievalHints {
+  const lexical = boundPlanTexts(
+    searchPlan?.lexicalTerms,
+    REMOTE_V1_LIMITS.lexicalTermCount,
+    REMOTE_V1_LIMITS.lexicalTermCodePoints,
+    'drop'
+  );
+  const semantic = boundPlanTexts(
+    searchPlan?.semanticQueries,
+    REMOTE_V1_LIMITS.semanticQueryCount,
+    REMOTE_V1_LIMITS.semanticQueryCodePoints,
+    'truncate'
+  );
+  const lexicalTerms = lexical.texts;
+  const semanticQueries = semantic.texts;
+  return {
+    hints:
+      lexicalTerms.length > 0 || semanticQueries.length > 0
+        ? { lexicalTerms, semanticQueries }
+        : undefined,
+    droppedCount:
+      lexical.rawCount - lexicalTerms.length + (semantic.rawCount - semanticQueries.length),
+    rawCount: lexical.rawCount + semantic.rawCount,
+  };
+}
+
+function remoteRagErrorResponse(
+  error: FaqRagError,
+  fallbackMessage: string
+): { response: FaqRagPublicResponse; route: string } {
+  switch (error.code) {
+    case 'no_match':
+      return {
+        route: 'refuse_no_hit',
+        response: {
+          answer: fallbackMessage,
+          answerable: false,
+          sources: [],
+          responseType: 'refuse',
+        },
+      };
+    case 'deadline_exceeded':
+      return {
+        route: 'refuse_time_budget',
+        response: {
+          answer: TECHNICAL_FALLBACK_MESSAGE,
+          answerable: false,
+          sources: [],
+          responseType: 'refuse',
+          failureKind: 'envelope_invalid',
+          retryable: true,
+        },
+      };
+    case 'expired_token':
+    case 'quota_exceeded':
+    case 'kill_switch':
+    case 'invalid_contract':
+    case 'retrieval_failed':
+    case 'generation_failed':
+      break;
+    default: {
+      const exhaustive: never = error;
+      void exhaustive;
+      break;
+    }
+  }
+  return {
+    route: 'refuse_remote_error',
+    // remote-v1 の公開技術失敗形は envelope_invalid + retryable の一形に固定する。
+    // 詳細コードは本文やレスポンスへ流さず remote_error_code メトリクスで切り分ける。
+    response: {
+      answer: TECHNICAL_FALLBACK_MESSAGE,
+      answerable: false,
+      sources: [],
+      responseType: 'refuse',
+      failureKind: 'envelope_invalid',
+      retryable: true,
+    },
+  };
+}
+
 async function handleFaqRequest(
   faqPorts: FaqPorts,
   event: APIGatewayProxyEventV2,
-  context?: Context
+  context?: Context,
+  faqRagPort?: FaqRagPort
 ): Promise<APIGatewayProxyResultV2> {
   const method = event.requestContext?.http?.method;
   if (method === 'OPTIONS') {
@@ -1678,6 +1797,169 @@ async function handleFaqRequest(
         });
       }
       serialSearchPlan = smalltalk.searchPlan;
+    }
+
+    if (faqRagPort) {
+      let remoteRetrieveMs = 0;
+      let remoteGenerateMs = 0;
+      // ローカル経路の kb_plan_* に対応する観測。有界化で「plan 全滅」と「plan なし」が
+      // 同じ hints 省略に潰れるため、件数だけメトリクスへ残す（語そのものは非ログ）
+      const boundedPlan =
+        smalltalkMode === 'generated'
+          ? boundRemoteRetrievalHints(serialSearchPlan)
+          : undefined;
+      const respondFromRemote = async (
+        response: FaqRagPublicResponse,
+        route: string,
+        operation: 'retrieve' | 'generate' | 'complete',
+        errorCode: FaqRagError['code'] | null
+      ) => {
+        await settleSmalltalkCalls();
+        const totalMs = Date.now() - startedAt;
+        console.log(
+          JSON.stringify({
+            metric: 'faq_chat',
+            model: null,
+            route,
+            response_source: 'remote',
+            remote_contract_version: FAQ_RAG_CONTRACT_VERSION,
+            remote_operation: operation,
+            remote_error_code: errorCode,
+            remote_plan_dropped: boundedPlan?.droppedCount ?? 0,
+            remote_plan_raw_count: boundedPlan?.rawCount ?? 0,
+            structured_output_used: false,
+            structured_output_fallback: false,
+            input_tokens: 0,
+            output_tokens: 0,
+            latency_ms: totalMs,
+            settings_ms: settingsMs,
+            kb_retrieval_ms: remoteRetrieveMs,
+            model_ms: remoteGenerateMs,
+            ...smalltalkMetricFields,
+            total_ms: totalMs,
+            history_messages: sanitized.messages.length,
+            answerable: response.answerable,
+            source_count: response.sources.length,
+            skipped_model_call: operation === 'retrieve',
+          })
+        );
+        await logFaqQa(faqPorts, context, {
+          question: sanitized.currentQuestion,
+          answer: response.answer,
+          responseType: response.responseType,
+          route,
+          scopeFallback: response.scopeFallback === true,
+          failureKind: response.failureKind ?? null,
+          guardDetail: null,
+          sources: response.answerable ? response.sources.map((source) => source.topic) : [],
+          model: null,
+          totalMs,
+        });
+        return jsonResponse(200, response);
+      };
+
+      const retrieveRemainingMs =
+        remoteRagRemainingMs(context) - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS;
+      let retrieveResponse: FaqRagRetrieveResponse;
+      if (retrieveRemainingMs <= 0) {
+        retrieveResponse = {
+          contractVersion: FAQ_RAG_CONTRACT_VERSION,
+          ok: false,
+          error: { code: 'deadline_exceeded', retryable: true },
+        };
+      } else {
+        const remoteRetrieveStartedAt = Date.now();
+        try {
+          retrieveResponse = await faqRagPort.retrieve({
+            contractVersion: FAQ_RAG_CONTRACT_VERSION,
+            question: sanitized.currentQuestion,
+            ...(boundedPlan?.hints ? { hints: boundedPlan.hints } : {}),
+            remainingMs: retrieveRemainingMs,
+          });
+        } catch {
+          // ポート実装は通常エラーDTOへ写像するが、予期しない reject も本文なしで閉じる。
+          console.error(
+            '[faq-chat] remote call failed: operation=retrieve code=retrieval_failed'
+          );
+          retrieveResponse = {
+            contractVersion: FAQ_RAG_CONTRACT_VERSION,
+            ok: false,
+            error: { code: 'retrieval_failed', retryable: true },
+          };
+        } finally {
+          remoteRetrieveMs = Date.now() - remoteRetrieveStartedAt;
+        }
+      }
+      if (!retrieveResponse.ok) {
+        if (retrieveResponse.error.code === 'invalid_contract') {
+          console.error(
+            '[faq-chat] remote contract failure: operation=retrieve code=invalid_contract'
+          );
+        }
+        const mapped = remoteRagErrorResponse(retrieveResponse.error, fallbackMessage);
+        return respondFromRemote(
+          mapped.response,
+          mapped.route,
+          'retrieve',
+          retrieveResponse.error.code
+        );
+      }
+
+      const generateRemainingMs = remoteRagRemainingMs(context);
+      let generateResponse: FaqRagGenerateResponse;
+      if (generateRemainingMs <= 0) {
+        generateResponse = {
+          contractVersion: FAQ_RAG_CONTRACT_VERSION,
+          ok: false,
+          error: { code: 'deadline_exceeded', retryable: true },
+        };
+      } else {
+        const remoteGenerateStartedAt = Date.now();
+        try {
+          generateResponse = await faqRagPort.generate({
+            contractVersion: FAQ_RAG_CONTRACT_VERSION,
+            sessionToken: retrieveResponse.sessionToken,
+            idempotencyKey: randomUUID(),
+            currentQuestion: sanitized.currentQuestion,
+            messages: [{ role: 'user', content: sanitized.messages[0]!.content }],
+            remainingMs: generateRemainingMs,
+          });
+        } catch {
+          console.error(
+            '[faq-chat] remote call failed: operation=generate code=generation_failed'
+          );
+          generateResponse = {
+            contractVersion: FAQ_RAG_CONTRACT_VERSION,
+            ok: false,
+            error: { code: 'generation_failed', retryable: true },
+          };
+        } finally {
+          remoteGenerateMs = Date.now() - remoteGenerateStartedAt;
+        }
+      }
+      if (!generateResponse.ok) {
+        if (generateResponse.error.code === 'invalid_contract') {
+          console.error(
+            '[faq-chat] remote contract failure: operation=generate code=invalid_contract'
+          );
+        }
+        const mapped = remoteRagErrorResponse(generateResponse.error, fallbackMessage);
+        return respondFromRemote(
+          mapped.response,
+          mapped.route,
+          'generate',
+          generateResponse.error.code
+        );
+      }
+
+      const remoteResponse = generateResponse.response;
+      const remoteRoute =
+        remoteResponse.responseType === 'kb_answer'
+          ? 'kb_answer'
+          : remoteResponse.scopeFallback === true
+            ? 'scope_fallback'
+            : 'refuse_guard';
+      return respondFromRemote(remoteResponse, remoteRoute, 'complete', null);
     }
 
     // KB注入（public のみ・検索型）。検索クエリは「現在の質問」のみ（過去質問は混ぜない）。
@@ -2139,7 +2421,7 @@ async function handleFaqRequest(
   }
 }
 
-export function createFaqHandler(faqPorts: FaqPorts) {
+export function createFaqHandler(faqPorts: FaqPorts, faqRagPort?: FaqRagPort) {
   return (event: APIGatewayProxyEventV2, context?: Context) =>
-    handleFaqRequest(faqPorts, event, context);
+    handleFaqRequest(faqPorts, event, context, faqRagPort);
 }

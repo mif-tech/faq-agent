@@ -3,6 +3,7 @@ import { dynamoDbFaqKbSource } from './free/dynamodb-entries.js';
 import type { FaqPorts } from '../ports/index.js';
 import type { FaqChatSettings, FaqStoragePort } from '../ports/storage.js';
 import { getItem, LiteTableNames, putItem } from '../infra/lite-dynamodb.js';
+import { createRemoteFaqRagHttpClient } from './remote/http-client.js';
 
 interface FaqSettingRow {
   key: string;
@@ -11,6 +12,10 @@ interface FaqSettingRow {
 }
 
 export type ProductionFaqAdapters = FaqPorts;
+
+export function createProductionRemoteFaqRagPort() {
+  return createRemoteFaqRagHttpClient();
+}
 
 const storage: FaqStoragePort = {
   async loadSettings() {

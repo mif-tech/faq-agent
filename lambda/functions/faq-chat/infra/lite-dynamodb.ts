@@ -7,8 +7,77 @@ import {
 } from '@aws-sdk/lib-dynamodb';
 
 const endpoint = process.env.DYNAMODB_ENDPOINT ?? '';
-const tablePrefix = process.env.DYNAMODB_TABLE_PREFIX ?? 'dev';
 const region = process.env.AWS_REGION ?? 'us-west-2';
+
+const DYNAMODB_TABLE_NAME_PATTERN = /^[A-Za-z0-9_.-]{3,255}$/u;
+const TABLE_NAME_ENV = {
+  Settings: 'FAQ_SETTINGS_TABLE_NAME',
+  KnowledgeEntries: 'FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME',
+  FaqQaLogs: 'FAQ_QA_LOGS_TABLE_NAME',
+} as const;
+const TABLE_SUFFIX = {
+  Settings: 'Settings',
+  KnowledgeEntries: 'KnowledgeEntries',
+  FaqQaLogs: 'FaqQaLogs',
+} as const;
+
+export interface LiteTableNameMap {
+  Settings: string;
+  KnowledgeEntries: string;
+  FaqQaLogs: string;
+}
+
+function requiredEnvironmentValue(
+  environment: NodeJS.ProcessEnv,
+  name: string
+): string {
+  const value = environment[name];
+  if (value === undefined || value.length === 0) {
+    throw new Error(`${name} must be set to a non-empty value`);
+  }
+  if (value !== value.trim()) {
+    throw new Error(`${name} must not contain leading or trailing whitespace`);
+  }
+  return value;
+}
+
+function validateTableName(name: string, value: string): void {
+  if (!DYNAMODB_TABLE_NAME_PATTERN.test(value)) {
+    throw new Error(
+      `${name} must be a valid DynamoDB table name using 3-255 ` +
+        'letters, digits, underscores, hyphens, or periods'
+    );
+  }
+}
+
+export function resolveLiteTableNames(
+  environment: NodeJS.ProcessEnv = process.env
+): Readonly<LiteTableNameMap> {
+  const prefix = requiredEnvironmentValue(environment, 'FAQ_TABLE_NAME_PREFIX');
+  const resolved = Object.fromEntries(
+    Object.entries(TABLE_NAME_ENV).map(([key, environmentName]) => {
+      const tableName = requiredEnvironmentValue(environment, environmentName);
+      validateTableName(environmentName, tableName);
+      return [key, tableName];
+    })
+  ) as unknown as LiteTableNameMap;
+
+  if (new Set(Object.values(resolved)).size !== Object.keys(resolved).length) {
+    throw new Error('FAQ table names must be distinct and must not be interchanged');
+  }
+
+  for (const key of Object.keys(TABLE_NAME_ENV) as Array<keyof LiteTableNameMap>) {
+    const expected = `${prefix}-${TABLE_SUFFIX[key]}`;
+    if (resolved[key] !== expected) {
+      throw new Error(
+        `${TABLE_NAME_ENV[key]} must exactly match ${expected} for ` +
+          'FAQ_TABLE_NAME_PREFIX'
+      );
+    }
+  }
+
+  return Object.freeze(resolved);
+}
 
 const clientConfig: ConstructorParameters<typeof DynamoDBClient>[0] = { region };
 if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
@@ -24,11 +93,7 @@ const client = DynamoDBDocumentClient.from(new DynamoDBClient(clientConfig), {
   unmarshallOptions: { wrapNumbers: false },
 });
 
-export const LiteTableNames = Object.freeze({
-  Settings: `${tablePrefix}-Settings`,
-  KnowledgeEntries: `${tablePrefix}-KnowledgeEntries`,
-  FaqQaLogs: `${tablePrefix}-FaqQaLogs`,
-});
+export const LiteTableNames = resolveLiteTableNames();
 
 export interface LitePutOptions {
   conditionExpression?: string;

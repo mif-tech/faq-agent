@@ -21,6 +21,9 @@ const outfile = path.join(outDir, 'handler-test-entry.mjs');
 const handlerPath = path.join(FAQ_ROOT, 'handler.ts').replaceAll('\\', '/');
 const stubPath = path.join(FAQ_ROOT, 'adapters', 'stub.ts').replaceAll('\\', '/');
 const freePath = path.join(FAQ_ROOT, 'adapters', 'free', 'index.ts').replaceAll('\\', '/');
+const remoteContractPath = path
+  .join(FAQ_ROOT, 'adapters', 'remote', 'contract.ts')
+  .replaceAll('\\', '/');
 const SAMPLE_KB = JSON.parse(
   fs.readFileSync(path.join(HERE, '..', 'eval', 'faq-chat', 'sample-kb.json'), 'utf8')
 );
@@ -30,10 +33,11 @@ await build({
     contents: [
       `import { createFaqHandler } from ${JSON.stringify(handlerPath)};`,
       'let activeHandler;',
-      'export function __setFaqPortsForTest(ports) { activeHandler = createFaqHandler(ports); }',
+      'export function __setFaqPortsForTest(ports, remoteRag) { activeHandler = createFaqHandler(ports, remoteRag); }',
       "export async function handler(event, context) { if (!activeHandler) throw new Error('FAQ test handler is not configured'); return activeHandler(event, context); }",
       `export { createStubFaqPorts } from ${JSON.stringify(stubPath)};`,
       `export { createFreeFaqPorts } from ${JSON.stringify(freePath)};`,
+      `export { parseRemoteV1RetrieveRequest } from ${JSON.stringify(remoteContractPath)};`,
     ].join('\n'),
     loader: 'ts',
     resolveDir: HERE,
@@ -117,6 +121,7 @@ const {
   createFreeFaqPorts,
   createStubFaqPorts,
   handler,
+  parseRemoteV1RetrieveRequest,
 } = await import(pathToFileURL(outfile).href);
 
 const SERVICE_UNAVAILABLE_MESSAGE =
@@ -912,4 +917,354 @@ test('free ports: smalltalk ポートの supportsStructuredOutput=false で rout
   const { response, captured } = await invoke({ messages: [{ role: 'user', content: '営業時間は何時から何時までですか' }] });
   assert.equal(response.statusCode, 200);
   assert.equal(lastFaqMetric(captured).router_structured_output_used, false);
+});
+
+test('remote profile: retrieve -> generate の公開 kb_answer を既存形状で返す', async () => {
+  const ports = createStubFaqPorts({ retrieval: 'empty', settings: { enabled: true } });
+  const calls = { retrieve: [], generate: [] };
+  const remoteRag = {
+    async retrieve(request) {
+      calls.retrieve.push(request);
+      return {
+        contractVersion: 'remote-v1',
+        ok: true,
+        sessionToken: '7f4c3e1a-9b62-4d85-a137-5c8e2f9046bd',
+        expiresAtEpochMs: Date.now() + 30_000,
+      };
+    },
+    async generate(request) {
+      calls.generate.push(request);
+      return {
+        contractVersion: 'remote-v1',
+        ok: true,
+        response: {
+          answer: '平日の営業時間は9時から17時です。',
+          answerable: true,
+          sources: [
+            {
+              entryId: 'faq-hours',
+              topic: '営業時間',
+              url: 'https://example.com/hours',
+            },
+          ],
+          responseType: 'kb_answer',
+        },
+      };
+    },
+  };
+  __setFaqPortsForTest(ports, remoteRag);
+
+  const question = '営業時間を教えてください';
+  const { response, body, captured } = await invoke({
+    messages: [{ role: 'user', content: question }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(body, {
+    answer: '平日の営業時間は9時から17時です。',
+    answerable: true,
+    sources: [
+      {
+        entryId: 'faq-hours',
+        topic: '営業時間',
+        url: 'https://example.com/hours',
+      },
+    ],
+    responseType: 'kb_answer',
+  });
+  assert.equal(ports.retrieval.calls.length, 0, 'local retrieval must stay bypassed');
+  assert.equal(ports.answerGeneration.calls.length, 0, 'local answer generation must stay bypassed');
+  assert.equal(calls.retrieve.length, 1);
+  assert.equal(calls.retrieve[0].question, question);
+  assert.equal(calls.retrieve[0].remainingMs, 22_500);
+  assert.equal(calls.generate.length, 1);
+  assert.match(calls.generate[0].idempotencyKey, /^[0-9a-f-]{36}$/u);
+  assert.equal(calls.generate[0].currentQuestion, question);
+  assert.deepEqual(calls.generate[0].messages, [{ role: 'user', content: question }]);
+  assert.equal(calls.generate[0].remainingMs, 27_500);
+  assert.equal(ports.storage.qaLogs.length, 1);
+  assert.deepEqual(ports.storage.qaLogs[0].sources, ['営業時間']);
+  const metric = lastFaqMetric(captured);
+  assert.equal(metric.model, null);
+  assert.equal(metric.remote_error_code, null);
+});
+
+test('remote profile: generated smalltalk の検索 hints を retrieve DTO へ引き継ぐ', async () => {
+  const routerDecision = JSON.stringify({
+    route: 'faq_or_action',
+    speech_acts: [],
+    has_business_topic: true,
+    has_information_request: true,
+    has_action_request: false,
+    has_prompt_injection: false,
+    has_sensitive_topic: false,
+    search_plan: {
+      lexical_terms: ['料金', '基本料金'],
+      semantic_queries: ['サービスの料金はいくらか'],
+    },
+  });
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    smalltalkGeneration: { stopReason: 'end_turn', text: routerDecision },
+    settings: { enabled: true, smalltalkMode: 'generated' },
+  });
+  let retrieveRequest;
+  __setFaqPortsForTest(ports, {
+    async retrieve(request) {
+      retrieveRequest = request;
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'no_match', retryable: false },
+      };
+    },
+    async generate() {
+      throw new Error('generate must not run after no_match');
+    },
+  });
+
+  const { response } = await invoke({
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(retrieveRequest.hints, {
+    lexicalTerms: ['料金', '基本料金'],
+    semanticQueries: ['サービスの料金はいくらか'],
+  });
+  assert.equal(ports.retrieval.calls.length, 0);
+});
+
+test('remote profile: 上限超過の検索 plan を code point 単位で有界化して retrieve へ渡す', async () => {
+  const lexicalTerms = [
+    'ＡＢＣ',
+    'abc',
+    ...Array.from({ length: 8 }, (_, index) => `検索語${index + 1}`),
+  ];
+  const overlongSemanticQuery = '😀'.repeat(65);
+  const routerDecision = JSON.stringify({
+    route: 'faq_or_action',
+    speech_acts: [],
+    has_business_topic: true,
+    has_information_request: true,
+    has_action_request: false,
+    has_prompt_injection: false,
+    has_sensitive_topic: false,
+    search_plan: {
+      lexical_terms: lexicalTerms,
+      semantic_queries: [overlongSemanticQuery, '第2の意味検索', '第3の意味検索'],
+    },
+  });
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    smalltalkGeneration: { stopReason: 'end_turn', text: routerDecision },
+    settings: { enabled: true, smalltalkMode: 'generated' },
+  });
+  let retrieveRequest;
+  __setFaqPortsForTest(ports, {
+    async retrieve(request) {
+      retrieveRequest = parseRemoteV1RetrieveRequest(request);
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'no_match', retryable: false },
+      };
+    },
+    async generate() {
+      throw new Error('generate must not run after no_match');
+    },
+  });
+
+  const { response, body, captured } = await invoke({
+    messages: [{ role: 'user', content: '料金プランを検索してください' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.responseType, 'refuse');
+  assert.equal('failureKind' in body, false);
+  assert.deepEqual(retrieveRequest.hints, {
+    lexicalTerms: ['ＡＢＣ', ...lexicalTerms.slice(2, 9)],
+    semanticQueries: ['😀'.repeat(64), '第2の意味検索'],
+  });
+  assert.equal(Array.from(retrieveRequest.hints.semanticQueries[0]).length, 64);
+  assert.equal(lastFaqMetric(captured).remote_error_code, 'no_match');
+  // 有界化の観測: 字句は dedup 後9件中8件採用(1 drop)・意味は3件中2件採用(1 drop)。
+  // truncate で残った要素は drop に数えない
+  assert.equal(lastFaqMetric(captured).remote_plan_dropped, 2);
+  assert.equal(lastFaqMetric(captured).remote_plan_raw_count, 12);
+  assert.doesNotMatch(captured.error.flat().map(String).join('\n'), /invalid_contract/u);
+});
+
+test('remote profile: 有界化後に空の検索 plan は retrieve DTO の hints を省略する', async () => {
+  const routerDecision = JSON.stringify({
+    route: 'faq_or_action',
+    speech_acts: [],
+    has_business_topic: true,
+    has_information_request: true,
+    has_action_request: false,
+    has_prompt_injection: false,
+    has_sensitive_topic: false,
+    search_plan: {
+      lexical_terms: ['長'.repeat(17), '😀'.repeat(17)],
+      semantic_queries: [],
+    },
+  });
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    smalltalkGeneration: { stopReason: 'end_turn', text: routerDecision },
+    settings: { enabled: true, smalltalkMode: 'generated' },
+  });
+  let retrieveRequest;
+  __setFaqPortsForTest(ports, {
+    async retrieve(request) {
+      retrieveRequest = parseRemoteV1RetrieveRequest(request);
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'no_match', retryable: false },
+      };
+    },
+    async generate() {
+      throw new Error('generate must not run after no_match');
+    },
+  });
+
+  const { response, captured } = await invoke({
+    messages: [{ role: 'user', content: '料金プランを検索してください' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal('hints' in retrieveRequest, false);
+  // hints 省略でも「plan なし(raw=0)」と「有界化で全滅(raw>0)」をメトリクスで区別できる
+  assert.equal(lastFaqMetric(captured).remote_plan_dropped, 2);
+  assert.equal(lastFaqMetric(captured).remote_plan_raw_count, 2);
+});
+
+test('remote profile: generate 最低枠を引いた retrieve 予算が0なら deadline 経路へ倒す', async () => {
+  const ports = createStubFaqPorts({ retrieval: 'empty', settings: { enabled: true } });
+  let retrieveCalls = 0;
+  let generateCalls = 0;
+  __setFaqPortsForTest(ports, {
+    async retrieve() {
+      retrieveCalls += 1;
+      throw new Error('retrieve must not run without a positive budget');
+    },
+    async generate() {
+      generateCalls += 1;
+      throw new Error('generate must not run after retrieve deadline');
+    },
+  });
+
+  const { response, body, captured } = await invoke(
+    { messages: [{ role: 'user', content: '料金を教えてください' }] },
+    { getRemainingTimeInMillis: () => 7_500 }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.responseType, 'refuse');
+  assert.equal(body.failureKind, 'envelope_invalid');
+  assert.equal(body.retryable, true);
+  assert.equal(retrieveCalls, 0);
+  assert.equal(generateCalls, 0);
+  const metric = lastFaqMetric(captured);
+  assert.equal(metric.route, 'refuse_time_budget');
+  assert.equal(metric.remote_error_code, 'deadline_exceeded');
+});
+
+test('remote profile: no_match は既存の KB 該当なし refuse へ写像する', async () => {
+  const ports = createStubFaqPorts({ retrieval: 'empty', settings: { enabled: true } });
+  let generateCalls = 0;
+  __setFaqPortsForTest(ports, {
+    async retrieve() {
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'no_match', retryable: false },
+      };
+    },
+    async generate() {
+      generateCalls += 1;
+      throw new Error('generate must not run after no_match');
+    },
+  });
+
+  const { response, body, captured } = await invoke({
+    messages: [{ role: 'user', content: '対象外の質問です' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.responseType, 'refuse');
+  assert.equal(body.answerable, false);
+  assert.deepEqual(body.sources, []);
+  assert.equal('failureKind' in body, false);
+  assert.equal('retryable' in body, false);
+  assert.equal(generateCalls, 0);
+  assert.equal(lastFaqMetric(captured).route, 'refuse_no_hit');
+  assert.equal(lastFaqMetric(captured).remote_error_code, 'no_match');
+});
+
+test('remote profile: kill_switch は再試行可能な既存技術系 refuse へ写像する', async () => {
+  const ports = createStubFaqPorts({ retrieval: 'empty', settings: { enabled: true } });
+  __setFaqPortsForTest(ports, {
+    async retrieve() {
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'kill_switch', retryable: true },
+      };
+    },
+    async generate() {
+      throw new Error('generate must not run while the remote kill switch is active');
+    },
+  });
+
+  const { response, body, captured } = await invoke({
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(body, {
+    answer: TECHNICAL_FALLBACK_MESSAGE,
+    answerable: false,
+    sources: [],
+    responseType: 'refuse',
+    failureKind: 'envelope_invalid',
+    retryable: true,
+  });
+  assert.equal(lastFaqMetric(captured).remote_error_code, 'kill_switch');
+});
+
+test('remote profile: invalid_contract は技術系 refuse と値を含まない切り分けログへ写像する', async () => {
+  const ports = createStubFaqPorts({ retrieval: 'empty', settings: { enabled: true } });
+  const secretQuestion = 'LEAK_CANARY_126 の料金を教えてください';
+  __setFaqPortsForTest(ports, {
+    async retrieve() {
+      return {
+        contractVersion: 'remote-v1',
+        ok: true,
+        sessionToken: '7f4c3e1a-9b62-4d85-a137-5c8e2f9046bd',
+        expiresAtEpochMs: Date.now() + 30_000,
+      };
+    },
+    async generate() {
+      return {
+        contractVersion: 'remote-v1',
+        ok: false,
+        error: { code: 'invalid_contract', retryable: false },
+      };
+    },
+  });
+
+  const { response, body, captured } = await invoke({
+    messages: [{ role: 'user', content: secretQuestion }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.responseType, 'refuse');
+  assert.equal(body.failureKind, 'envelope_invalid');
+  assert.equal(body.retryable, true);
+  const errors = captured.error.flat().map(String).join('\n');
+  assert.match(errors, /operation=generate code=invalid_contract/u);
+  assert.doesNotMatch(errors, /LEAK_CANARY_126/u);
+  assert.equal(lastFaqMetric(captured).remote_error_code, 'invalid_contract');
 });

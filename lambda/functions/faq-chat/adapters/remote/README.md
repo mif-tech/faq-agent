@@ -1,9 +1,26 @@
 # remote-v1 RAG contract
 
 `remote-v1` is the JSON-only boundary between the reusable FAQ application and a
-server-owned retrieval/generation implementation. The public-safe files define the wire contract;
-the canonical repository also contains a process-local reference seam. Nothing here performs
-HTTP, authentication, signing, quota storage, or deployment wiring.
+server-owned retrieval/generation implementation. The public-safe client side contains the wire
+contract and `http-client.ts`: DTO validation, optional STS AssumeRole, and SigV4 request signing
+are transport concerns that can be distributed without the server implementation. The canonical
+repository alone contains the server seam (`opaque-session.ts`, `opaque-session-store.ts`, and
+`production-rag.ts`) and the managed `remote-rag` stack that supplies the private KB retrieval,
+prompt, model, and generation implementation.
+`FAQ_PORTS_PROFILE=remote` keeps the shell's input guards, smalltalk routing, settings, Q&A logging,
+PII masking, and HTTP response formatting local, while delegating the retrieval, private prompt,
+answer generation, and public-envelope core through that higher-level client.
+
+The client requires `FAQ_REMOTE_RAG_BASE_URL` (HTTPS only), uses `AWS_REGION`, and optionally
+assumes `FAQ_REMOTE_RAG_ROLE_ARN` before signing `execute-api` requests with SigV4. Without the
+role ARN it signs with the default credential chain for tests or same-account execution. The
+canonical SAM parameters are `FaqRemoteRagBaseUrl`, `FaqRemoteRagRoleArn`, and
+`FaqRemoteRagApiId`. Remote SAM deployments require the base URL plus either the role ARN or the
+same-account API ID; the latter grants the Lambda execution role only the two named `api` stage
+routes. The client validates outbound and inbound DTOs, retries only retrieval, and never retries
+generation. Question and message values are not written to its error logs.
+
+Operational degradation and recovery are documented in the [remote → free runbook](../../../../../docs/REMOTE_FREE_DEGRADATION.md).
 
 ## Why retrieve and generate are separate
 
@@ -65,38 +82,37 @@ Error DTOs never carry internal messages or quota state.
 promise that re-sending a consumed token will execute generation again. A matching idempotency key
 replays the cached result, while a different key receives `expired_token`.
 
-## Opaque-session lifecycle
+## Opaque-session lifecycle (caller-visible behavior)
 
-`createInProcessOpaqueSessionFaqRagPort` composes the existing low-level retrieval, answer-prompt,
-and generation ports on the server side:
+For a `remote-v1` caller the two-step flow behaves as:
 
-1. `retrieve` keeps the complete retrieval result in a private `Map` keyed by `randomUUID()` and
-   returns only the token and expiry.
-2. `generate` verifies that the current question is bound to the session, atomically consumes the
-   token in-process, builds the private prompt, resolves source refs, and returns the final public
-   envelope.
-3. The same idempotency key and payload share an in-flight/cached result, while the same key with a
-   different payload fails as `invalid_contract`.
+1. `retrieve` returns only a short-lived opaque `sessionToken`; the KB projection stays server-side.
+2. `generate` consumes that token once and returns the final public envelope. The request's
+   `currentQuestion` must match the retrieval question bound to the token.
+3. The same idempotency key with the same payload replays the in-flight/cached result; the same key
+   with a different payload fails as `invalid_contract`.
 4. Reusing a consumed token with another key fails as `expired_token`.
 
-The Map implementation is deliberately a deterministic seam, not a deployable distributed
-idempotency guarantee. The maps are also unbounded and `prune` is a linear scan on each request:
-without the authentication, rate limiting, and quota that the transport PR adds, a caller can grow
-memory and prune cost linearly just by calling `retrieve`. Treat bounded storage (max entries or
-LRU, plus per-tenant quota) as a hard precondition of the HTTP adapter PR, together with the
-atomic shared store below. Expiry is enforced logically at access time; physical cleanup is lazy and
-runs on later requests. Its TTL, one-time use, and replay cache do not survive a cold start and are
-not atomic across concurrent server instances. Each caller wait and provider call has a logical
-deadline, but physical cancellation still depends on the low-level provider honoring its
-`timeoutMs`. The later managed API must replace the Maps with an atomic shared store before
-claiming cross-instance double-charge protection. That store must namespace sessions and
-idempotency keys by the authenticated tenant derived by the transport, never by a DTO tenant
-claim.
+Each caller wait and provider call has a logical deadline, but physical cancellation still depends
+on the low-level provider honoring its `timeoutMs`.
+
+Server-side internals — the opaque-session composer, the session/replay/quota state store
+(in-memory reference vs the managed DynamoDB state store), tenant namespacing, and the private
+KB/prompt/LLM composition — live only in the canonical repository (`opaque-session.ts`,
+`opaque-session-store.ts`, `production-rag.ts`, and the `lambda/stacks/remote-rag` stack) and are not
+part of the public distribution.
 
 Structured output is enabled only when both the selected model's server-owned allowlist decision
 and the generation port capability permit it. The wire caller cannot choose the model or schema.
 
-`opaque-session.ts` and `production-rag.ts` are canonical-only server precursors and are
-intentionally absent from public sync. The public boundary contains the higher-level port, DTO
-validator, documentation, golden fixture, and wire-contract test only. Neither server precursor is
-wired into the current handler or `FAQ_PORTS_PROFILE` in this change.
+Public sync includes `http-client.ts` and its sanitized client test together with the higher-level
+port, DTO validator, documentation, golden fixture, and wire-contract tests. It intentionally
+excludes `opaque-session.ts`, `opaque-session-store.ts`, `production-rag.ts`, and the entire
+`lambda/stacks/remote-rag` server implementation, including its KB search/injection, private prompt,
+and LLM wiring.
+
+The canonical handler and the public lite composition wire the public-safe HTTP client when
+`FAQ_PORTS_PROFILE=remote`; the managed `remote-rag` stack owns and composes the excluded server
+seam. The public lite SAM template requires the remote API base URL, the exact cross-account role
+ARN, and its ExternalId together. It grants the generated FAQ caller role only `sts:AssumeRole` on
+that configured role; the free profile does not initialize the remote client.
