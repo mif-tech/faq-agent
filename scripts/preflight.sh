@@ -113,11 +113,11 @@ check_sam() {
 check_aws_cli() {
   local output major
   if ! has_command aws; then
-    ng 'aws が見つかりません（AWS CLI v2 が必要です。AWS アカウントへの接続は行いません）'
+    warn 'aws が見つかりません（ローカル FAQ の起動には不要です。AWS へデプロイする場合は AWS CLI v2 を導入してください）'
     return
   fi
   if ! output="$(aws --version 2>&1)"; then
-    ng "aws --version に失敗しました: $output"
+    warn "aws --version に失敗しました（ローカル FAQ の起動は続行できます）: $output"
     return
   fi
   if [[ "$output" =~ aws-cli/([0-9]+)\. ]]; then
@@ -125,7 +125,7 @@ check_aws_cli() {
     if ((major >= 2)); then
       ok "AWS CLI: $output"
     else
-      ng "AWS CLI v$major は未対応です（v2 が必要です）"
+      warn "AWS CLI v$major はデプロイ用途では未対応です（ローカル FAQ の起動には不要です。デプロイには v2 が必要です）"
     fi
   else
     warn "AWS CLI のバージョンを判定できません: $output"
