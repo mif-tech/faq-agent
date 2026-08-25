@@ -11,16 +11,21 @@ prompt, model, and generation implementation.
 PII masking, and HTTP response formatting local, while delegating the retrieval, private prompt,
 answer generation, and public-envelope core through that higher-level client.
 
-The client requires `FAQ_REMOTE_RAG_BASE_URL` (HTTPS only), uses `AWS_REGION`, and optionally
-assumes `FAQ_REMOTE_RAG_ROLE_ARN` before signing `execute-api` requests with SigV4. Without the
-role ARN it signs with the default credential chain for tests or same-account execution. The
-canonical SAM parameters are `FaqRemoteRagBaseUrl`, `FaqRemoteRagRoleArn`, and
-`FaqRemoteRagApiId`. Remote SAM deployments require the base URL plus either the role ARN or the
-same-account API ID; the latter grants the Lambda execution role only the two named `api` stage
-routes. The client validates outbound and inbound DTOs, retries only retrieval, and never retries
-generation. Question and message values are not written to its error logs.
+The client requires `FAQ_REMOTE_RAG_BASE_URL` (HTTPS only), uses `AWS_REGION`, and signs
+`execute-api` requests with SigV4. Its library seam can use the default credential chain when no
+role is supplied for isolated tests, but the public lite SAM template does not expose a role-less
+remote deployment. `FaqPortsProfile=remote` requires all three public SAM parameters:
+`FaqRemoteRagBaseUrl`, the exact cross-account `FaqRemoteRagRoleArn`, and
+`FaqRemoteRagExternalId`. The template grants the FAQ caller role only `sts:AssumeRole` on that
+configured role; it does not grant direct `execute-api:Invoke`. The client validates outbound and
+inbound DTOs, retries only retrieval, and never retries generation. Question and message values
+are not written to its error logs.
 
-Operational degradation and recovery are documented in the [remote → free runbook](../../../../../docs/REMOTE_FREE_DEGRADATION.md).
+Remote failures never fall back to `free` automatically. A deliberate degradation updates the
+same stack to `FaqPortsProfile=free` and clears all three remote parameters, after the operator has
+verified that the local public KB is ready. Recovery is another reviewed deployment change that
+restores the complete remote parameter set; approval, rollback evidence, and incident handling
+belong in the deploying organization's runbook rather than this public transport contract.
 
 ## Why retrieve and generate are separate
 

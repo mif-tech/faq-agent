@@ -1,12 +1,17 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.2.3-alpha",
-  "canonicalHead": "ddf182ce9003af6cf1c1667e46cc6d5e2cb8cc3e",
-  "fileCount": 69,
+  "sourceRef": "v0.2.4-alpha",
+  "canonicalHead": "358d4debd130130000859edbc195509c3f965094",
+  "fileCount": 71,
   "files": [
     {
       "path": ".gitattributes",
       "sha256": "41c9067849395f502c4057e2f2c6cd3535457c33df7491a406335f7596989371",
+      "origin": "overlay"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "sha256": "0e938cb5bcb7ad8832d54d59ea3574b03a406941840599ca7a01c124533342ea",
       "origin": "overlay"
     },
     {
@@ -21,7 +26,7 @@
     },
     {
       "path": "docs/QUICKSTART_FAQ_LOCAL.md",
-      "sha256": "c58bd049064bc728ce89a60d6058c5fc77bf0c1cdacfddeb16cc7b5467640785",
+      "sha256": "acde7426c1d4b8c44ca36c8050323295c86e769e44d696a536b2dbe479a9c006",
       "origin": "overlay"
     },
     {
@@ -131,7 +136,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/README.md",
-      "sha256": "803f0c7c2ab113ae5bbd6fce406921bd7a453074f247cd5964c680cb551c3027",
+      "sha256": "5d3223dbf545cc695eed864c4b2d30a5353b3113d05abe38570f2b2e50ac7c57",
       "origin": "allowlist"
     },
     {
@@ -286,7 +291,7 @@
     },
     {
       "path": "lambda/tests/faq-local-scripts.test.mjs",
-      "sha256": "3e1b092dd00cb82817678dca6e5b36be7bd00f8a4b1c07a920dc2e13e02840ed",
+      "sha256": "590556888e52cd9f21d43250ac20c60c91f9d7fc0ee5e506005a2c2bc2751685",
       "origin": "allowlist"
     },
     {
@@ -315,13 +320,18 @@
       "origin": "overlay"
     },
     {
+      "path": "package-lock.json",
+      "sha256": "20650cd138c1102f4a98dbbb4ef1350ce0a9d88925a06f63f43d809408b88ef6",
+      "origin": "overlay"
+    },
+    {
       "path": "package.json",
       "sha256": "8a82bc329aeb17adeff155038303f04e5ddec1a22684dbaa092450f509240c82",
       "origin": "overlay"
     },
     {
       "path": "README.md",
-      "sha256": "713e40ae0e76016ff9ece7ba6c482c76843722aa107fc5e911e2be54407a28c1",
+      "sha256": "f00199d58bcbca11734fd719d81d3a1c23a99d531c5eccb7813da487a752347d",
       "origin": "overlay"
     },
     {
@@ -331,7 +341,7 @@
     },
     {
       "path": "scripts/faq-local-down.sh",
-      "sha256": "6a989318063999efec85365f1c7549cc7ab9afb4c3ff33c726b478854dfcf8ed",
+      "sha256": "4e928dff95c1536fa3c4c1880229c160572c215613752f877a7ec5dfe60b07ae",
       "origin": "allowlist"
     },
     {
@@ -346,7 +356,7 @@
     },
     {
       "path": "scripts/preflight.sh",
-      "sha256": "58c3b480add4eac0101c7f1425cee93f04438ded2e9f262e9ffdc634343c0c46",
+      "sha256": "71f510441d9b0d4a1159dd8fb5e2ee2e6629c12dff21df201c1f38f81a5e225f",
       "origin": "allowlist"
     }
   ]

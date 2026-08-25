@@ -1,51 +1,51 @@
 # MIF FAQ Chat Free
 
-MIF FAQ Chat Free は、非公開の正本から公開可能な FAQ チャット部分だけを切り出した、セルフホスト向けのフリー版です。静的 UI、`POST /faq-chat`、DynamoDB Local のサンプルデータ、モック評価を含みます。
+[![CI](https://github.com/mif-tech/faq-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/mif-tech/faq-agent/actions/workflows/ci.yml)
+
+## このリポジトリの位置づけ
+
+MIF FAQ Chat Free は、AI 応答支援、CRM、配信・分析、ナレッジ運用を含む非公開の ChatOps 運用基盤から、公開 FAQ チャットの実行境界を切り出した、ソース公開型の無償セルフホスト版です。静的 UI、`POST /faq-chat`、DynamoDB Local 用の架空サンプルデータ、モック評価を含みます。
+
+```text
+MIF FAQ Chat Free（self-host）
++-- free profile
+|   +-- API キーなし          -> keyword / bigram 検索 + 決定的な回答
+|   `-- ANTHROPIC_API_KEY     -> 簡易 AI 生成（任意）
+`-- remote profile
+    `-- MIF Remote RAG API    -> 検索・生成を委譲（別契約）
+```
+
+CRM、回答承認、配信、分析、管理画面、高度な検索・評価資産は含みません。free profile は小規模な FAQ の試用と検証を目的とする alpha であり、回答品質、検索精度、監視、可用性は保証しません。
+
+MIF管理の検索・生成APIを接続した商用構成は、実顧客向け公開FAQとして本番運用されています。本repo単体の free profile は alpha であり、商用構成と同等の検索品質・監視・可用性・SLAは含みません。
+
+本リポジトリは一般的なオープンソースではありません。利用、改変、再配布等の条件は [LICENSE.md](LICENSE.md) を確認してください。
 
 このリポジトリは正本から一方向に再生成されます。更新は正本で行った後、公開同期で反映します。そのため、このリポジトリへの Pull Request を直接取り込めない場合があります。個別サポート、SLA、ロードマップ、利用者データのアップロードサービスは付属しません。
 
-## 30分で確認する
+## 設計上の要点
 
-必要なものは Node.js 22 以上、Docker Engine 24 以上または Docker Desktop 4 以上、Docker Compose v2、AWS SAM CLI、AWS CLI v2、Bash です。Windows では WSL2 から実行してください。
+- **交換可能な実行境界:** HTTP handler と検索・生成・保存の実装を [`ports/`](lambda/functions/faq-chat/ports/) で分離しています。`free` / `remote` を切り替えても、入力ガード、Q&Aログ、PIIマスク、応答封筒は lite 側に残ります。
+- **fail-closed な remote 境界:** remote の必須設定不足や組み合わせ不整合は CloudFormation Rules と初期化時検証で拒否します。remote 障害時に `free` へ自動フォールバックせず、[`remote-v1`](lambda/functions/faq-chat/adapters/remote/README.md) の入出力 DTO も未知フィールドを含めて検証します。
+- **限定された cross-account 認証:** remote 認証は指定した role への `sts:AssumeRole` に限定し、caller role に直接の `execute-api:Invoke` を付与しません。取得した一時 credential で Remote RAG API へのリクエストを SigV4 署名します。
+- **再現可能な検証:** [CI](.github/workflows/ci.yml) で TypeScript 型検査、契約・異常系・権限境界のテスト、SAM template lint を実行します。モック評価は合成データだけを使い、ネットワークへ接続しません。
+
+## ローカルで確認する
+
+必要なものは Node.js 22 以上、Python 3（AWS SAM CLI の前提）、Docker Engine 24 以上または Docker Desktop 4 以上、Docker Compose v2、AWS SAM CLI、Bash、Git、curl です。AWS CLI と AWS アカウントはローカル実行には不要です。Windows では WSL2 から実行してください。
 
 ```bash
 # GitHub の Code メニューからこの公開リポジトリを clone した後
-cd <cloned-directory>
-npm install
-(cd lambda && npm install)
-
+npm ci && npm --prefix lambda ci
 npm run faq:preflight
 npm run faq:local:up
-```
-
-起動コマンドは DynamoDB Local、3テーブル、合成サンプル KB、SAM API を準備し、`http://localhost:3000` で待ち受けます。別のターミナルから確認します。
-
-```bash
+# 別のターミナルで応答を確認
 curl -s -X POST http://localhost:3000/faq-chat \
   -H 'Content-Type: application/json' \
   -d '{"messages":[{"role":"user","content":"営業時間を教えてください"}]}'
 ```
 
-API キーを設定しなければ、外部 AI API を呼ばない決定的なキーワードモードで回答します。任意で起動前に `ANTHROPIC_API_KEY` を設定すると、簡素なグラウンディング用プロンプトで回答生成を試せます。利用料金と送信データは API 提供者の条件に従います。
-
-Settings の `smalltalkMode` は既定で `template_only` です。`smalltalkMode=generated` は `ANTHROPIC_API_KEY` がある場合だけ動作し、キーがなければ既存の KB 経路へ fail closed します。有効化すると、通常の FAQ 質問でもルーターとして LLM 呼び出しが1回追加され、純粋な雑談では最大3回（router → generator → judge）の追加 LLM 呼び出しが発生します。コスト事故を避けるため、低い spend limit を設定した専用キーと請求アラートを用意してから有効化することを推奨します。
-
-テナント固有の業務語彙（自社の製品名・サービス名など）は公開版に含まれません。環境変数 `FAQ_GUARD_BUSINESS_TERMS`（カンマ区切り、例: `MyProduct,マイサービス`）を設定すると、生成可否の決定的ガード（has_business_topic）が自社語彙にも反応し、業務話題が雑談として応答されるのをより確実に防げます。
-
-静的 UI も確認する場合は API を起動したまま、別のターミナルで次を実行し、`http://localhost:8080` を開きます。
-
-```bash
-cd faq
-python3 -m http.server 8080
-```
-
-終了時は API 側で `Ctrl+C` を押した後、リポジトリルートで次を実行します。
-
-```bash
-npm run faq:local:down
-```
-
-詳しいトラブルシューティングは [ローカル・クイックスタート](docs/QUICKSTART_FAQ_LOCAL.md) を参照してください。
+期待結果は HTTP 200 の JSON と、同梱サンプル KB に基づく回答です。API キーを設定しなければ外部 AI API は呼びません。静的 UI、任意の AI 生成、終了・秘密情報の消去、トラブルシューティングは [ローカル・クイックスタート](docs/QUICKSTART_FAQ_LOCAL.md) を参照してください。
 
 ## 構成
 
@@ -79,8 +79,6 @@ npm run eval:mock
 ```
 
 モック評価は合成された架空の質問、会話エピソード、KBだけを使い、ネットワークへ接続しません。主目的は HTTP handler、応答封筒、採点ランナーの配管確認です。実際の回答品質や検索精度を保証するものではありません。
-
-第三者環境での動作確認記録（OS / architecture、clone から応答までの所要時間、つまずいた点）は、実測後に追記します。未計測の値を成果として扱いません。
 
 ## 既知の制約
 
@@ -137,175 +135,6 @@ aws cloudformation describe-stacks \
 **lite 殻と MIF Remote RAG API は同一 AWS region に配置してください。** Base URL、role ARN、ExternalId のいずれかが欠けた `remote` 更新は CloudFormation Rules が拒否します。Role ARN と ExternalId の片方だけを設定することもできません。
 
 `NoEcho` は shell history、CI log、`samconfig.toml` への保存を防ぎません。ExternalId は secret 管理された CI/CD 入力などから渡し、コマンドや設定ファイルへ平文で残さないでください。なお ExternalId は Lambda の環境変数として**平文で保存**され、同一アカウントで `lambda:GetFunctionConfiguration` を持つ主体からは読み取れます。ExternalId は confused deputy 対策であって秘匿情報ではない前提です（主たる防御は MIF 側 trust policy の exact caller principal 一致）。したがって値の管理は「秘密鍵」ではなく「漏れても即座に権限昇格にはならないが、不用意にログ/リポジトリへ残さない」レベルで扱ってください。
-
-#### prod candidate の side-by-side 契約
-
-既存顧客本番と同じ AWS account に candidate を置く場合は、次の値を固定します。この契約は既存の
-実デプロイ凍結を解除するものではありません。運用承認前に deploy、sync、tag を実行しないでください。
-
-| 項目 | 固定値 |
-| --- | --- |
-| CloudFormation stack | `mif-faq-lite-prod-candidate` |
-| `Environment` | `prod` |
-| `FaqTableNamespace` | `candidate` |
-| 初回 `FaqPortsProfile` | `free` |
-
-この組合せで作る3表は `prod-candidate-Settings`、`prod-candidate-KnowledgeEntries`、
-`prod-candidate-FaqQaLogs` です。既存本番の `prod-Settings`、`prod-KnowledgeEntries`、
-`prod-FaqQaLogs` を import、参照、IAM Resource に指定しません。
-
-1. **free/bootstrap**: stack 名、`Environment=prod`、`FaqTableNamespace=candidate`、
-   `FaqPortsProfile=free` を明示した非対話のデプロイ入力で新規作成します。remote 用3パラメータは空のままです。
-2. **Outputs と seed**: stack 作成後、caller role と3表名を Outputs から取得し、下記の完全一致検証後だけ
-   candidate 表へ承認済みデータを投入します。
-3. **remote 更新**: caller role の trust 登録完了後、同じ stack を `FaqPortsProfile=remote` と remote 用3値で
-   更新します。`Environment=prod` と `FaqTableNamespace=candidate` は変えず、その他の既存 parameter も保持します。
-
-Outputs は手入力の表名より優先し、次のように同じ stack から解決します。この例は標準入力や対話プロンプトを
-使いません。
-
-```bash
-set -euo pipefail
-
-STACK_NAME='mif-faq-lite-prod-candidate'
-REGION='<remote-ragと同じregion>'
-AWS_PROFILE_NAME='<customer-account-profile>'
-EXPECTED_ACCOUNT_ID='<12-digit-customer-account-id>'
-
-ACTUAL_ACCOUNT_ID="$(aws sts get-caller-identity \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME" \
-  --query Account \
-  --output text \
-  --no-cli-pager)"
-if [[ ! "$EXPECTED_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || \
-   [ "$ACTUAL_ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]; then
-  echo "AWS account mismatch: expected $EXPECTED_ACCOUNT_ID, got $ACTUAL_ACCOUNT_ID" >&2
-  exit 1
-fi
-
-stack_output() {
-  aws cloudformation describe-stacks \
-    --stack-name "$STACK_NAME" \
-    --region "$REGION" \
-    --profile "$AWS_PROFILE_NAME" \
-    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
-    --output text \
-    --no-cli-pager
-}
-
-FAQ_CALLER_ROLE_ARN="$(stack_output FaqChatCallerRoleArn)"
-FAQ_SETTINGS_TABLE="$(stack_output FaqSettingsTableName)"
-FAQ_KNOWLEDGE_TABLE="$(stack_output FaqKnowledgeEntriesTableName)"
-FAQ_QA_LOGS_TABLE="$(stack_output FaqQaLogsTableName)"
-
-if [ -z "$FAQ_CALLER_ROLE_ARN" ] || [ "$FAQ_CALLER_ROLE_ARN" = 'None' ]; then
-  echo 'FaqChatCallerRoleArn output is missing' >&2
-  exit 1
-fi
-if [ "$FAQ_SETTINGS_TABLE" != 'prod-candidate-Settings' ] || \
-   [ "$FAQ_KNOWLEDGE_TABLE" != 'prod-candidate-KnowledgeEntries' ] || \
-   [ "$FAQ_QA_LOGS_TABLE" != 'prod-candidate-FaqQaLogs' ]; then
-  echo 'candidate table outputs do not match the deployment contract' >&2
-  exit 1
-fi
-```
-
-seed は低レベル DynamoDB JSON としてレビュー済みの item file を用意し、解決済みの candidate 表名を
-`--table-name` に渡します。Settings には `faq_chat.enabled=true` を含む承認済み設定を1件、
-KnowledgeEntries には公開を承認した `active` / `public` / default-agent の entry だけを投入します。
-KnowledgeEntries のコマンドはレビュー済み item ごとに繰り返します。`FaqQaLogs` に初期 seed は不要です。
-
-```bash
-set -euo pipefail
-
-SETTINGS_ITEM_FILE='<absolute-path-to-approved-settings-item.json>'
-KNOWLEDGE_ITEM_FILE='<absolute-path-to-approved-knowledge-item.json>'
-
-ACTUAL_ACCOUNT_ID="$(aws sts get-caller-identity \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME" \
-  --query Account \
-  --output text \
-  --no-cli-pager)"
-if [ "$ACTUAL_ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]; then
-  echo "AWS account mismatch before seed: expected $EXPECTED_ACCOUNT_ID, got $ACTUAL_ACCOUNT_ID" >&2
-  exit 1
-fi
-
-aws dynamodb put-item \
-  --table-name "$FAQ_SETTINGS_TABLE" \
-  --item "file://$SETTINGS_ITEM_FILE" \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME" \
-  --no-cli-pager
-
-aws dynamodb put-item \
-  --table-name "$FAQ_KNOWLEDGE_TABLE" \
-  --item "file://$KNOWLEDGE_ITEM_FILE" \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME" \
-  --no-cli-pager
-```
-
-`scripts/faq-local-seed.ts` は DynamoDB Local の `http://localhost:8000` と `dev` prefix に固定した
-ローカル専用スクリプトです。AWS candidate の seed には使用しないでください。
-
-`FaqTableNamespace` は stack 作成後に変更しません。変更すると3表すべてが replacement され、新しい空表へ
-切り替わる一方、旧表は `UpdateReplacePolicy: Retain` により残ります。profile 更新では明示的に
-`candidate` を維持するか、CloudFormation change set で `UsePreviousValue=true` にしてください。
-
-cleanup では、stack を削除する**前**に上記3つの table-name Output を incident record に保存し、必要な
-backup/export と削除承認を完了させます。成功済み stack を削除しても、3表は
-`DeletionPolicy: RetainExceptOnCreate` により AWS account に残り、保存料金等の課金が続きます。初回 CREATE が
-失敗して rollback された場合だけは `RetainExceptOnCreate` により削除されることがあります。
-
-stack 削除後に retained table も不要なら、記録済みの3表名が上記 `prod-candidate-*` と完全一致することを
-再確認してから明示削除します。stack 削除後は Outputs を取得できません。
-
-```bash
-set -euo pipefail
-
-ACTUAL_ACCOUNT_ID="$(aws sts get-caller-identity \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME" \
-  --query Account \
-  --output text \
-  --no-cli-pager)"
-if [ "$ACTUAL_ACCOUNT_ID" != "$EXPECTED_ACCOUNT_ID" ]; then
-  echo "AWS account mismatch before cleanup: expected $EXPECTED_ACCOUNT_ID, got $ACTUAL_ACCOUNT_ID" >&2
-  exit 1
-fi
-
-aws cloudformation delete-stack \
-  --stack-name "$STACK_NAME" \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME"
-aws cloudformation wait stack-delete-complete \
-  --stack-name "$STACK_NAME" \
-  --region "$REGION" \
-  --profile "$AWS_PROFILE_NAME"
-
-for table_name in \
-  "$FAQ_SETTINGS_TABLE" \
-  "$FAQ_KNOWLEDGE_TABLE" \
-  "$FAQ_QA_LOGS_TABLE"
-do
-  case "$table_name" in
-    prod-candidate-Settings|prod-candidate-KnowledgeEntries|prod-candidate-FaqQaLogs) ;;
-    *) echo "unexpected retained table: $table_name" >&2; exit 1 ;;
-  esac
-  aws dynamodb delete-table \
-    --table-name "$table_name" \
-    --region "$REGION" \
-    --profile "$AWS_PROFILE_NAME" \
-    --no-cli-pager
-  aws dynamodb wait table-not-exists \
-    --table-name "$table_name" \
-    --region "$REGION" \
-    --profile "$AWS_PROFILE_NAME"
-done
-```
 
 `AnthropicApiKey` を `samconfig.toml` に保存しないでください。`sam deploy --guided` の「Save arguments to configuration file」は `N` を選び、API キーは秘密管理されたデプロイ入力から都度渡してください。CloudFormation の `NoEcho` は、ローカル設定ファイルへの保存を防ぐ機能ではありません。
 

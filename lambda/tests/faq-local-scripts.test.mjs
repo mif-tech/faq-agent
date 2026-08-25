@@ -171,3 +171,28 @@ test('preflight treats port 8000 held by this project\'s dynamodb-local containe
   assert.match(preflight, /docker ps -q --filter name=.*dynamodb-local.* --filter publish=8000/);
   assert.match(preflight, /re-run is fine/);
 });
+
+test('preflight treats AWS CLI as optional for local FAQ startup', () => {
+  const preflight = readRepoFile('scripts/preflight.sh');
+  const awsCheck = preflight.match(
+    /check_aws_cli\(\) \{(?<body>[\s\S]*?)\n\}\n\ncheck_node_and_npm/u
+  )?.groups?.body;
+  assert.ok(awsCheck, 'check_aws_cli function must exist');
+  assert.match(awsCheck, /warn 'aws が見つかりません/);
+  assert.doesNotMatch(awsCheck, /\bng\s/);
+});
+
+test('FAQ shutdown removes the local SAM environment file even if Compose fails', () => {
+  const shutdown = readRepoFile('scripts/faq-local-down.sh');
+  assert.match(
+    shutdown,
+    /ENV_VARS_FILE="\$PROJECT_ROOT\/lambda\/env-vars\.local\.faq\.json"/
+  );
+  assert.match(shutdown, /docker compose down[^\n]*\|\| compose_status=\$\?/);
+  assert.match(shutdown, /rm -f -- "\$ENV_VARS_FILE"/);
+  assert.ok(
+    shutdown.indexOf('rm -f -- "$ENV_VARS_FILE"') <
+      shutdown.indexOf('if ((compose_status != 0))'),
+    'environment cleanup must run before propagating a Compose failure'
+  );
+});
