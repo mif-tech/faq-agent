@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * faq-chat handler の HTTP event -> response 実行テスト / issue #120 run2
+ * faq-chat handler の HTTP event -> response 実行テスト
  *
  * handler core の import 閉包は shared/ を持たず、各テストは factory に公開 repo 用
  * stub を注入する。下の小さな wrapper は既存テストの差し替え API を保つ。
@@ -150,18 +150,23 @@ function createFreeHandlerPorts(options, settings = { enabled: true }) {
   return { ...createFreeFaqPorts(options), storage };
 }
 
-function createEvent({ messages, rawBody } = {}) {
+function createEvent({ messages, rawBody, agentId, method = 'POST' } = {}) {
+  const namedPath = agentId === undefined ? undefined : `/agents/${agentId}/faq-chat`;
   return {
     version: '2.0',
-    routeKey: 'POST /faq-chat',
-    rawPath: '/faq-chat',
+    routeKey:
+      namedPath === undefined
+        ? `${method} /faq-chat`
+        : `${method} /agents/{agentId}/faq-chat`,
+    rawPath: namedPath ?? '/faq-chat',
     headers: { 'content-type': 'application/json' },
     requestContext: {
       http: {
-        method: 'POST',
-        path: '/faq-chat',
+        method,
+        path: namedPath ?? '/faq-chat',
       },
     },
+    ...(agentId === undefined ? {} : { pathParameters: { agentId } }),
     body: rawBody ?? JSON.stringify({ messages }),
     isBase64Encoded: false,
   };
@@ -182,7 +187,7 @@ async function invoke(options, context = TEST_CONTEXT) {
     assert.equal(typeof response, 'object');
     return {
       response,
-      body: JSON.parse(response.body),
+      body: typeof response.body === 'string' ? JSON.parse(response.body) : undefined,
       captured,
     };
   } finally {
@@ -214,6 +219,220 @@ function faqMetrics(captured) {
   }
   return metrics;
 }
+
+test('named route: agentId形式不正はAgentConfigを読まず404にする', async () => {
+  const ports = createStubFaqPorts({ settings: { enabled: true } });
+  __setFaqPortsForTest(ports);
+
+  const { response, body } = await invoke({
+    agentId: 'Invalid-Agent',
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(body, { error: 'agent not found' });
+  assert.deepEqual(ports.agentConfig.calls, []);
+});
+
+test('named route: OPTIONS preflightはAgentConfigを読まず従来CORS 204を返す', async () => {
+  const ports = createStubFaqPorts({ settings: { enabled: true } });
+  __setFaqPortsForTest(ports);
+
+  const { response, body } = await invoke({
+    agentId: 'missing-agent',
+    method: 'OPTIONS',
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(body, undefined);
+  assert.equal(response.body, undefined);
+  assert.deepEqual(ports.agentConfig.calls, []);
+});
+
+test('named route: 未登録agentはdefaultへフォールバックせず404にする', async () => {
+  const ports = createStubFaqPorts({
+    entries: [NORMAL_ENTRY],
+    settings: { enabled: true },
+  });
+  __setFaqPortsForTest(ports);
+
+  const { response, body } = await invoke({
+    agentId: 'missing-agent',
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(body, { error: 'agent not found' });
+  assert.deepEqual(ports.agentConfig.calls, ['missing-agent']);
+  assert.equal(ports.retrieval.calls.length, 0);
+});
+
+test('named route: disabledまたは型不正profileは404にする', async () => {
+  const disabledPorts = createStubFaqPorts({
+    settings: { enabled: true },
+    agentProfiles: [{ agentId: 'disabled-agent', enabled: false }],
+  });
+  __setFaqPortsForTest(disabledPorts);
+
+  const disabled = await invoke({
+    agentId: 'disabled-agent',
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+  assert.equal(disabled.response.statusCode, 404);
+  assert.deepEqual(disabled.body, { error: 'agent not found' });
+
+  const invalidPorts = createStubFaqPorts({ settings: { enabled: true } });
+  invalidPorts.agentConfig.resolveAgentProfile = async (agentId) => ({
+    agentId,
+    enabled: true,
+    maxOutputTokens: '600',
+  });
+  __setFaqPortsForTest(invalidPorts);
+
+  const invalid = await invoke({
+    agentId: 'invalid-profile',
+    messages: [{ role: 'user', content: '料金を教えてください' }],
+  });
+  assert.equal(invalid.response.statusCode, 404);
+  assert.deepEqual(invalid.body, { error: 'agent not found' });
+  assert.equal(invalidPorts.retrieval.calls.length, 0);
+
+  const invalidLogPolicyPorts = createStubFaqPorts({ settings: { enabled: true } });
+  invalidLogPolicyPorts.agentConfig.resolveAgentProfile = async (agentId) => ({
+    agentId,
+    enabled: true,
+    logPolicy: 'full',
+  });
+  __setFaqPortsForTest(invalidLogPolicyPorts);
+
+  const invalidLogPolicy = await invoke({
+    agentId: 'invalid-log-policy',
+    messages: [{ role: 'user', content: 'invalid log policy' }],
+  });
+  assert.equal(invalidLogPolicy.response.statusCode, 404);
+  assert.deepEqual(invalidLogPolicy.body, { error: 'agent not found' });
+  assert.equal(invalidLogPolicyPorts.retrieval.calls.length, 0);
+});
+
+test('named route: profile省略値を含む実効model/token制限をfail closedで強制する', async () => {
+  const unknownModelPorts = createStubFaqPorts({
+    settings: { enabled: true, model: 'unknown-model', maxOutputTokens: 600 },
+    agentProfiles: [{ agentId: 'unknown-model-agent', enabled: true }],
+  });
+  __setFaqPortsForTest(unknownModelPorts);
+  const unknownModel = await invoke({
+    agentId: 'unknown-model-agent',
+    messages: [{ role: 'user', content: '料金' }],
+  });
+  assert.equal(unknownModel.response.statusCode, 404);
+  assert.deepEqual(unknownModel.body, { error: 'agent not found' });
+  assert.equal(unknownModelPorts.retrieval.calls.length, 0);
+
+  const fractionalTokensPorts = createStubFaqPorts({
+    settings: {
+      enabled: true,
+      model: 'claude-sonnet-5',
+      maxOutputTokens: 600.5,
+    },
+    agentProfiles: [{ agentId: 'fractional-tokens-agent', enabled: true }],
+  });
+  __setFaqPortsForTest(fractionalTokensPorts);
+  const fractionalTokens = await invoke({
+    agentId: 'fractional-tokens-agent',
+    messages: [{ role: 'user', content: '料金' }],
+  });
+  assert.equal(fractionalTokens.response.statusCode, 404);
+  assert.deepEqual(fractionalTokens.body, { error: 'agent not found' });
+  assert.equal(fractionalTokensPorts.retrieval.calls.length, 0);
+
+  const inheritedPorts = createStubFaqPorts({
+    entries: [NORMAL_ENTRY],
+    settings: {
+      enabled: true,
+      model: 'claude-sonnet-5',
+      maxOutputTokens: 800,
+    },
+    agentProfiles: [{ agentId: 'inherited-agent', enabled: true }],
+  });
+  __setFaqPortsForTest(inheritedPorts);
+  const inherited = await invoke({
+    agentId: 'inherited-agent',
+    messages: [{ role: 'user', content: '料金' }],
+  });
+  assert.equal(inherited.response.statusCode, 200);
+  assert.equal(inherited.body.responseType, 'kb_answer');
+  assert.equal(inheritedPorts.answerGeneration.calls[0].model, 'claude-sonnet-5');
+  assert.equal(inheritedPorts.answerGeneration.calls[0].maxTokens, 800);
+  assert.equal(inheritedPorts.retrieval.calls[0].kbAgentId, 'inherited-agent');
+});
+
+test('named route: profile上書きとkbAgentIdスコープを既存回答フローへ適用する', async () => {
+  const ports = createStubFaqPorts({
+    entries: [NORMAL_ENTRY],
+    settings: {
+      enabled: true,
+      systemPrompt: 'base system',
+      model: 'base-model',
+      maxOutputTokens: 500,
+      fallbackMessage: 'base fallback',
+    },
+    agentProfiles: [
+      {
+        agentId: 'store-a',
+        enabled: true,
+        systemPrompt: 'named system',
+        model: 'claude-haiku-4-5-20251001',
+        maxOutputTokens: 777,
+        fallbackMessage: 'named fallback',
+        kbAgentId: 'shared-kb',
+        logPolicy: 'redacted_full',
+      },
+    ],
+  });
+  __setFaqPortsForTest(ports);
+
+  const answered = await invoke({
+    agentId: 'store-a',
+    messages: [{ role: 'user', content: '料金' }],
+  });
+  assert.equal(answered.response.statusCode, 200);
+  assert.equal(answered.body.responseType, 'kb_answer');
+  assert.deepEqual(ports.agentConfig.calls, ['store-a']);
+  assert.equal(ports.retrieval.calls[0].kbAgentId, 'shared-kb');
+  assert.match(ports.answerGeneration.calls[0].system, /^named system\n/);
+  assert.equal(ports.answerGeneration.calls[0].model, 'claude-haiku-4-5-20251001');
+  assert.equal(ports.answerGeneration.calls[0].maxTokens, 777);
+  assert.equal(ports.storage.qaLogs[0].route, 'agents/store-a/kb_answer');
+
+  const refused = await invoke({
+    agentId: 'store-a',
+    messages: [{ role: 'user', content: 'まったく無関係な質問' }],
+  });
+  assert.equal(refused.response.statusCode, 200);
+  assert.equal(refused.body.answer, 'named fallback');
+  assert.equal(refused.body.responseType, 'refuse');
+  assert.equal(ports.retrieval.calls[1].kbAgentId, 'shared-kb');
+  assert.equal(ports.storage.qaLogs[1].route, 'agents/store-a/refuse_no_hit');
+});
+
+test('default route: AgentConfigを一度も呼ばず従来経路をそのまま使う', async () => {
+  const ports = createStubFaqPorts({
+    entries: [NORMAL_ENTRY],
+    settings: { enabled: true },
+    agentProfiles: [{ agentId: 'default', enabled: true }],
+  });
+  __setFaqPortsForTest(ports);
+
+  const { response, body } = await invoke({
+    messages: [{ role: 'user', content: '料金' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.responseType, 'kb_answer');
+  assert.deepEqual(ports.agentConfig.calls, []);
+  assert.equal(ports.retrieval.calls[0].kbAgentId, undefined);
+  assert.equal(ports.storage.qaLogs[0].route, 'kb_answer');
+});
 
 test('正常系: stub 出典を解決して200を返し、PIIマスク後のQ&Aを1件保存する', async () => {
   const ports = createStubFaqPorts({
@@ -625,7 +844,7 @@ test('retrieval throw: handler はクラッシュせず現行の503を返す', a
   assert.equal(ports.storage.qaLogs.length, 0);
 });
 
-// ---- PR#122 レビュー対応: 構造化出力・stop_reason 全分岐・generated smalltalk の hints 伝播 ----
+// ---- レビュー対応: 構造化出力・stop_reason 全分岐・generated smalltalk の hints 伝播 ----
 
 test('構造化出力: 対応モデル(Settings.model)では jsonSchema が生成ポートへ渡り、fallback 通知がメトリクスに載る', async () => {
   const ports = createStubFaqPorts({
@@ -762,7 +981,7 @@ test('generated smalltalk: router の search_plan が hints として検索ポ�
   assert.equal(ports.smalltalkGeneration.calls.length, 1);
   assert.equal(ports.smalltalkGeneration.calls[0].temperature, 0);
   assert.equal(typeof ports.smalltalkGeneration.calls[0].jsonSchema, 'object');
-  // hints 伝播（ports 抽出 #121 の契約）
+  // hints 伝播（ports 抽出 の契約）
   assert.equal(ports.retrieval.calls.length, 1);
   assert.deepEqual(ports.retrieval.calls[0].hints, {
     lexicalTerms: ['料金', '基本料金'],
@@ -772,7 +991,7 @@ test('generated smalltalk: router の search_plan が hints として検索ポ�
   assert.equal(metric.router_plan_invalid ?? false, false);
 });
 
-// ---- PR#125 レビュー対応 ----
+// ---- レビュー対応 ----
 
 test('guardVocabulary: ポート注入語は決定的フォールバックの has_business_topic と雑談 post-guard の両方に効く', async () => {
   // router が不正 JSON を返す → 決定的リスク判定（inspectDeterministicInputRisk）で業務話題と判定され KB 経路へ
@@ -881,7 +1100,7 @@ test('guardVocabulary: 非ラテン（カタカナ）の注入語は生成済み
 
 test('free ports: allowlist モデルでも supportsStructuredOutput=false なら jsonSchema を渡さず structured_output_used=false', async () => {
   // free の既定モデル（haiku 4.5）は構造化出力 allowlist に含まれるが、汎用 adapter は jsonSchema を使わない。
-  // capability を AND で見ないと free 側だけ偽陽性になり eval 比較が歪む（PR#124 レビュー指摘）
+  // capability を AND で見ないと free 側だけ偽陽性になり eval 比較が歪む（レビュー指摘）
   const ports = createFreeHandlerPorts({
     kbSource: { loadPublicEntries: async () => SAMPLE_KB },
     apiKey: null,

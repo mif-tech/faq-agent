@@ -6,23 +6,49 @@ import {
   ScanCommand,
 } from '@aws-sdk/lib-dynamodb';
 
-const endpoint = process.env.DYNAMODB_ENDPOINT ?? '';
+const endpoint = resolveEndpoint(process.env.DYNAMODB_ENDPOINT);
 const region = process.env.AWS_REGION ?? 'us-west-2';
+
+/**
+ * 非空で不正な endpoint は AWS 接続へフォールバックせずエラーにする（fail closed）。
+ * CLI 側 resolveDynamoDbEndpoint と同じ契約。誤設定のまま実 AWS 表へ
+ * 接続してしまう事故を防ぐ（累積レビュー指摘）。
+ */
+function resolveEndpoint(raw: string | undefined): string {
+  const value = raw ?? '';
+  if (value === '') return '';
+  if (value !== value.trim()) {
+    throw new Error('DYNAMODB_ENDPOINT must not contain leading or trailing whitespace');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('DYNAMODB_ENDPOINT must be a valid http(s) URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname.length === 0) {
+    throw new Error('DYNAMODB_ENDPOINT must be a valid http(s) URL');
+  }
+  return value;
+}
 
 const DYNAMODB_TABLE_NAME_PATTERN = /^[A-Za-z0-9_.-]{3,255}$/u;
 const TABLE_NAME_ENV = {
   Settings: 'FAQ_SETTINGS_TABLE_NAME',
+  AgentConfig: 'FAQ_AGENT_CONFIG_TABLE_NAME',
   KnowledgeEntries: 'FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME',
   FaqQaLogs: 'FAQ_QA_LOGS_TABLE_NAME',
 } as const;
 const TABLE_SUFFIX = {
   Settings: 'Settings',
+  AgentConfig: 'AgentConfig',
   KnowledgeEntries: 'KnowledgeEntries',
   FaqQaLogs: 'FaqQaLogs',
 } as const;
 
 export interface LiteTableNameMap {
   Settings: string;
+  AgentConfig: string;
   KnowledgeEntries: string;
   FaqQaLogs: string;
 }
@@ -80,7 +106,7 @@ export function resolveLiteTableNames(
 }
 
 const clientConfig: ConstructorParameters<typeof DynamoDBClient>[0] = { region };
-if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
+if (endpoint !== '') {
   clientConfig.endpoint = endpoint;
   clientConfig.credentials = {
     accessKeyId: 'local',
@@ -88,7 +114,7 @@ if (endpoint.startsWith('http://') || endpoint.startsWith('https://')) {
   };
 }
 
-const client = DynamoDBDocumentClient.from(new DynamoDBClient(clientConfig), {
+export const liteDocumentClient = DynamoDBDocumentClient.from(new DynamoDBClient(clientConfig), {
   marshallOptions: { removeUndefinedValues: true, convertEmptyValues: false },
   unmarshallOptions: { wrapNumbers: false },
 });
@@ -112,7 +138,7 @@ export async function getItem<T>(
   tableName: string,
   key: Record<string, unknown>
 ): Promise<T | null> {
-  const result = await client.send(
+  const result = await liteDocumentClient.send(
     new GetCommand({
       TableName: tableName,
       Key: key,
@@ -126,7 +152,7 @@ export async function putItem(
   item: Record<string, unknown>,
   options: LitePutOptions = {}
 ): Promise<void> {
-  await client.send(
+  await liteDocumentClient.send(
     new PutCommand({
       TableName: tableName,
       Item: item,
@@ -146,7 +172,7 @@ export async function scanAll<T>(
   let exclusiveStartKey: Record<string, unknown> | undefined;
 
   for (let page = 0; page < 100; page += 1) {
-    const result = await client.send(
+    const result = await liteDocumentClient.send(
       new ScanCommand({
         TableName: tableName,
         FilterExpression: options.filterExpression,

@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const source = path.join(HERE, '..', 'shared', 'search-plan-bounds.ts');
+const source = path.join(HERE, '..', 'shared', 'public', 'search-plan-bounds.ts');
 const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'search-plan-bounds-test-'));
 const output = path.join(outputRoot, 'search-plan-bounds.mjs');
 

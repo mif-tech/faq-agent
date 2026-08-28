@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * faq-chat の公開リポジトリ向け stub adapter 契約テスト / issue #120 run2
+ * faq-chat の公開リポジトリ向け stub adapter 契約テスト
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -293,7 +293,7 @@ test('storage はSettingsの有無を返し、Q&Aログを呼出元の配列へ�
   assert.equal(await missing.storage.loadSettings(), null);
 });
 
-// ---- PR#125 レビュー対応: オブジェクト形シナリオと fallback 模擬の stub 契約 ----
+// ---- レビュー対応: オブジェクト形シナリオと fallback 模擬の stub 契約 ----
 
 test('オブジェクト形シナリオは production の stop_reason 契約を写す', async (t) => {
   const request = (overrides = {}) => ({

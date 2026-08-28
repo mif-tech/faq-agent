@@ -12,6 +12,8 @@ import type {
   FaqRetrievalTelemetry,
 } from '../ports/retrieval.js';
 import type {
+  FaqAgentConfigPort,
+  FaqAgentProfile,
   FaqChatSettings,
   FaqQaLogRecord,
   FaqStoragePort,
@@ -20,7 +22,7 @@ import type {
 /**
  * 'slow_empty' は指定ms待ってから空結果を返すだけ（= 遅い empty）。handler の time_budget 分岐は
  * context.getRemainingTimeInMillis で踏むので、本物の「タイムアウト」を模すものではない
- * （PR#122 レビュー指摘で 'timeout' から改名）
+ * （レビュー指摘で 'timeout' から改名）
  */
 export type StubFaqRetrievalScenario = 'normal' | 'empty' | 'slow_empty' | 'throw';
 
@@ -52,6 +54,8 @@ export interface StubFaqPortsOptions {
   settings?: FaqChatSettings | null;
   /** Optional caller-owned sink used to inspect persisted Q&A records. */
   qaLogs?: FaqQaLogRecord[];
+  /** stub resolverが返すnamed agentプロファイル。省略時はnamed agentなし。 */
+  agentProfiles?: readonly FaqAgentProfile[];
   topN?: number;
   retrieval?: StubFaqRetrievalScenario;
   answerGeneration?: StubFaqGenerationScenario;
@@ -70,6 +74,7 @@ export interface StubFaqPortsOptions {
 export interface StubFaqRetrievalCall {
   question: string;
   hints?: FaqRetrievalHints | null;
+  kbAgentId?: string;
 }
 
 export interface StubFaqRetrievalPort extends FaqRetrievalPort {
@@ -88,11 +93,16 @@ export interface StubFaqStoragePort extends FaqStoragePort {
   readonly qaLogs: FaqQaLogRecord[];
 }
 
+export interface StubFaqAgentConfigPort extends FaqAgentConfigPort {
+  readonly calls: string[];
+}
+
 export interface StubFaqPorts extends FaqPorts {
   readonly retrieval: StubFaqRetrievalPort;
   readonly answerGeneration: StubFaqAnswerGenerationPort;
   readonly smalltalkGeneration: StubFaqSmalltalkGenerationPort;
   readonly storage: StubFaqStoragePort;
+  readonly agentConfig: StubFaqAgentConfigPort;
   readonly defaultModel: 'stub-model';
 }
 
@@ -339,6 +349,10 @@ export function createStubFaqPorts(options: StubFaqPortsOptions = {}): StubFaqPo
   const smalltalkCalls: FaqGenerationRequest[] = [];
   const settings = options.settings === undefined ? { enabled: true } : options.settings;
   const qaLogs = options.qaLogs ?? [];
+  const agentConfigCalls: string[] = [];
+  const agentProfiles = new Map(
+    (options.agentProfiles ?? []).map((profile) => [profile.agentId, profile] as const)
+  );
 
   return {
     retrieval: {
@@ -347,6 +361,7 @@ export function createStubFaqPorts(options: StubFaqPortsOptions = {}): StubFaqPo
         retrievalCalls.push({
           question: input.question,
           ...(input.hints === undefined ? {} : { hints: input.hints }),
+          ...(input.kbAgentId === undefined ? {} : { kbAgentId: input.kbAgentId }),
         });
         if (retrievalScenario === 'throw') {
           throw new Error('Stub FAQ retrieval failure');
@@ -397,6 +412,14 @@ export function createStubFaqPorts(options: StubFaqPortsOptions = {}): StubFaqPo
       },
       async putQaLog(record) {
         qaLogs.push({ ...record, sources: [...record.sources] });
+      },
+    },
+    agentConfig: {
+      calls: agentConfigCalls,
+      async resolveAgentProfile(agentId) {
+        agentConfigCalls.push(agentId);
+        const profile = agentProfiles.get(agentId);
+        return profile === undefined ? null : { ...profile };
       },
     },
     defaultModel: 'stub-model',

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** SigV4 remote-v1 HTTP client tests / issue #126. */
+/** SigV4 remote-v1 HTTP client tests / . */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

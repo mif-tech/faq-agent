@@ -165,7 +165,7 @@ function readConfig(env: Readonly<Record<string, string | undefined>>): RemoteCo
   let externalId: string | undefined;
   if (configuredExternalId !== undefined && configuredExternalId !== '') {
     // STS AssumeRole の ExternalId 実仕様は 2〜1224 文字・[\w+=,.@:/-]。ここで落とさないと
-    // role 作成は通るのに実行時の AssumeRole が必ず ValidationError になる（PR#138 レビュー）
+    // role 作成は通るのに実行時の AssumeRole が必ず ValidationError になる（レビュー）
     if (!/^[A-Za-z0-9_+=,.@:/-]{2,1224}$/.test(configuredExternalId)) {
       return failConfiguration(
         'FAQ_REMOTE_RAG_EXTERNAL_ID',

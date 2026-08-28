@@ -150,6 +150,13 @@ const TABLE_CONTRACTS = [
     outputName: 'FaqSettingsTableName',
   },
   {
+    logicalId: 'AgentConfigTable',
+    suffix: 'AgentConfig',
+    environmentName: 'FAQ_AGENT_CONFIG_TABLE_NAME',
+    action: 'dynamodb:GetItem',
+    outputName: 'FaqAgentConfigTableName',
+  },
+  {
     logicalId: 'KnowledgeEntriesTable',
     suffix: 'KnowledgeEntries',
     environmentName: 'FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME',
@@ -200,13 +207,20 @@ test('FAQ table namespace accepts only bounded lowercase alphanumeric and hyphen
   }
 });
 
-test('prod candidate creates three unconditional retained tables with isolated physical names', () => {
+test('prod candidate creates four unconditional retained tables with isolated physical names', () => {
   const parameters = withParameterDefaults({
     Environment: 'prod',
     FaqTableNamespace: 'candidate',
   });
   const tableLogicalIds = Object.entries(template.Resources)
-    .filter(([, resource]) => resource.Type === 'AWS::DynamoDB::Table')
+    .filter(
+      ([logicalId, resource]) =>
+        resource.Type === 'AWS::DynamoDB::Table' &&
+        !Object.hasOwn(resource, 'Condition') &&
+        // SlackQaLogsTableはFAQ契約外の常設データ表（再有効化CREATE衝突の回避で無条件化。
+        // 検証は slack-lite-template.test.mjs 側）。
+        logicalId !== 'SlackQaLogsTable'
+    )
     .map(([logicalId]) => logicalId)
     .sort();
   assert.deepEqual(
@@ -224,7 +238,16 @@ test('prod candidate creates three unconditional retained tables with isolated p
     assert.equal(Object.hasOwn(resource, 'Condition'), false);
     assert.equal(resource.DeletionPolicy, 'RetainExceptOnCreate');
     assert.equal(resource.UpdateReplacePolicy, 'Retain');
+    assert.equal(resource.Properties.BillingMode, 'PAY_PER_REQUEST');
   }
+
+  const agentConfig = template.Resources.AgentConfigTable.Properties;
+  assert.deepEqual(agentConfig.AttributeDefinitions, [
+    { AttributeName: 'agentId', AttributeType: 'S' },
+  ]);
+  assert.deepEqual(agentConfig.KeySchema, [
+    { AttributeName: 'agentId', KeyType: 'HASH' },
+  ]);
 
   const qaLogs = template.Resources.FaqQaLogsTable.Properties;
   assert.deepEqual(qaLogs.TimeToLiveSpecification, {
@@ -255,25 +278,29 @@ test('FaqChatFunction receives the exact candidate table names without the legac
   }
 });
 
-test('FAQ DynamoDB IAM maps each allowed action to exactly one logical table ARN', () => {
+test('FAQ DynamoDB IAM maps each allowed action to exactly the required table ARNs', () => {
   const policies = template.Resources.FaqChatFunction.Properties.Policies;
   const statements = collectStatements(policies);
   const dynamodbStatements = statements.filter((statement) =>
     actions(statement).some((action) => action.startsWith('dynamodb:'))
   );
-  assert.equal(dynamodbStatements.length, TABLE_CONTRACTS.length);
+  const expectedActions = [...new Set(TABLE_CONTRACTS.map(({ action }) => action))];
+  assert.equal(dynamodbStatements.length, expectedActions.length);
 
-  for (const contract of TABLE_CONTRACTS) {
+  for (const action of expectedActions) {
     const matchingStatements = dynamodbStatements.filter((statement) =>
-      actions(statement).includes(contract.action)
+      actions(statement).includes(action)
     );
-    assert.equal(matchingStatements.length, 1, `${contract.action} must have one statement`);
+    assert.equal(matchingStatements.length, 1, `${action} must have one statement`);
     const [statement] = matchingStatements;
     assert.equal(statement.Effect, 'Allow');
-    assert.deepEqual(actions(statement), [contract.action]);
-    assert.deepEqual(resources(statement), [
-      { 'Fn::GetAtt': [contract.logicalId, 'Arn'] },
-    ]);
+    assert.deepEqual(actions(statement), [action]);
+    assert.deepEqual(
+      resources(statement),
+      TABLE_CONTRACTS.filter((contract) => contract.action === action).map(
+        ({ logicalId }) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] })
+      )
+    );
   }
 
   const allActions = statements.flatMap(actions).sort();
@@ -313,9 +340,9 @@ test('candidate table, environment, and IAM contracts contain no canonical prod 
   }
 });
 
-test('three table-name outputs expose the created candidate table resources', () => {
+test('four table-name outputs expose the created candidate table resources', () => {
   const tableOutputNames = Object.keys(template.Outputs)
-    .filter((name) => name.endsWith('TableName'))
+    .filter((name) => name.startsWith('Faq') && name.endsWith('TableName'))
     .sort();
   assert.deepEqual(
     tableOutputNames,
@@ -326,6 +353,26 @@ test('three table-name outputs expose the created candidate table resources', ()
       Ref: contract.logicalId,
     });
   }
+});
+
+test('named FAQ route uses the same throttle limits and Lambda as the default route', () => {
+  const routeSettings = template.Resources.FaqHttpApi.Properties.RouteSettings;
+  assert.deepEqual(
+    routeSettings['POST /agents/{agentId}/faq-chat'],
+    routeSettings['POST /faq-chat']
+  );
+
+  const events = template.Resources.FaqChatFunction.Properties.Events;
+  assert.deepEqual(events.FaqAgentChatApi.Properties, {
+    ApiId: { Ref: 'FaqHttpApi' },
+    Path: '/agents/{agentId}/faq-chat',
+    Method: 'POST',
+  });
+  assert.deepEqual(events.FaqAgentChatOptions.Properties, {
+    ApiId: { Ref: 'FaqHttpApi' },
+    Path: '/agents/{agentId}/faq-chat',
+    Method: 'OPTIONS',
+  });
 });
 
 test('remote profile parameters retain exact choices and deployment-safe constraints', () => {

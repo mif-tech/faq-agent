@@ -1,5 +1,5 @@
 /**
- * 採点の純粋ロジック（run-eval.mjs から分離・#37 PR3）。
+ * 採点の純粋ロジック（run-eval.mjs から分離）。
  * 分離の目的は refuse / scope_fallback の4象限を決定的テストで固定すること
  * （lambda/tests/faq-chat-eval-scoring.test.mjs / codexレビュー承認条件）。
  */

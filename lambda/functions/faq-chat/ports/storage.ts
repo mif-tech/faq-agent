@@ -18,6 +18,22 @@ export interface FaqChatSettings {
   scopeFallbackMessage?: string;
 }
 
+/** 既存FAQフローへ入る前に解決する公開named agentプロファイル。 */
+export interface FaqAgentProfile {
+  agentId: string;
+  enabled: boolean;
+  systemPrompt?: string;
+  model?: string;
+  maxOutputTokens?: number;
+  fallbackMessage?: string;
+  kbAgentId?: string;
+  logPolicy?: 'off' | 'metadata_only' | 'redacted_full';
+}
+
+export interface FaqAgentConfigPort {
+  resolveAgentProfile(agentId: string): Promise<FaqAgentProfile | null>;
+}
+
 /** Exact item written to the FAQ Q&A log table by the handler. */
 export interface FaqQaLogRecord {
   dateBucket: string;
@@ -49,5 +65,5 @@ export interface FaqKbEntry {
 }
 
 export interface FaqKbSourcePort {
-  loadPublicEntries(): Promise<FaqKbEntry[]>;
+  loadPublicEntries(kbAgentId?: string): Promise<FaqKbEntry[]>;
 }

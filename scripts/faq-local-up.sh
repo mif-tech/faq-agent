@@ -79,6 +79,7 @@ const faqEnvironment = {
   DYNAMODB_TABLE_PREFIX: 'dev',
   FAQ_TABLE_NAME_PREFIX: 'dev',
   FAQ_SETTINGS_TABLE_NAME: 'dev-Settings',
+  FAQ_AGENT_CONFIG_TABLE_NAME: 'dev-AgentConfig',
   FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: 'dev-KnowledgeEntries',
   FAQ_QA_LOGS_TABLE_NAME: 'dev-FaqQaLogs',
   AWS_ACCESS_KEY_ID: 'local',

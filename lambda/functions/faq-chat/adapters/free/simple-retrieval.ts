@@ -9,10 +9,11 @@ import type { FaqKbEntry } from '../../ports/storage.js';
 export type SimpleRetrievalEntry = FaqKbEntry;
 
 export interface SimpleRetrievalOptions {
-  loadEntries: () => Promise<SimpleRetrievalEntry[]>;
+  loadEntries: (kbAgentId?: string) => Promise<SimpleRetrievalEntry[]>;
   topK?: number;
   maxCharsPerEntry?: number;
   cacheTtlMs?: number;
+  cacheMaxEntries?: number;
 }
 
 interface CorpusEntry extends SimpleRetrievalEntry {
@@ -34,11 +35,12 @@ interface RankedEntry {
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MAX_CHARS_PER_ENTRY = 1_500;
 const DEFAULT_CACHE_TTL_MS = 60_000;
+const DEFAULT_CACHE_MAX_ENTRIES = 64;
 const RETRIEVER_ALGORITHM_REVISION = 'free-bigram-v1';
 // メトリクス用トレースの上限と topic の無害化は production（shared/kb-injection.ts の
 // METRIC_TRACE_LEX_SLOTS=20 / sanitizeTopicForIndex().slice(0, 30)）と同じ規則にする。
 // bi-gram は照合が緩くほぼ全エントリが候補になるため、截断しないとログ行が KB 件数に比例して膨らむ
-// （PR#124 レビュー指摘）。shared は import せず値を写す
+// （レビュー指摘）。shared は import せず値を写す
 const METRIC_TRACE_SLOTS = 20;
 const METRIC_TOPIC_CODEPOINTS = 30;
 
@@ -287,29 +289,76 @@ export function createSimpleRetrievalPort(options: SimpleRetrievalOptions): FaqR
     DEFAULT_MAX_CHARS_PER_ENTRY
   );
   const cacheTtlMs = toNonNegativeInteger(options.cacheTtlMs, DEFAULT_CACHE_TTL_MS);
-  let cached: { corpus: LoadedCorpus; expiresAt: number } | null = null;
-  let loading: Promise<LoadedCorpus> | null = null;
+  const cacheMaxEntries = Math.max(
+    1,
+    toNonNegativeInteger(options.cacheMaxEntries, DEFAULT_CACHE_MAX_ENTRIES)
+  );
+  const cachedByAgent = new Map<
+    string | undefined,
+    { corpus: LoadedCorpus; expiresAt: number }
+  >();
+  const loadingByAgent = new Map<string | undefined, Promise<LoadedCorpus>>();
 
-  const loadCorpus = async (): Promise<LoadedCorpus> => {
+  const pruneCachedCorpora = (now: number): void => {
+    for (const [cachedAgentId, cached] of cachedByAgent) {
+      if (cached.expiresAt <= now) cachedByAgent.delete(cachedAgentId);
+    }
+  };
+
+  const cacheCorpus = (kbAgentId: string | undefined, corpus: LoadedCorpus): void => {
+    pruneCachedCorpora(Date.now());
+    while (cachedByAgent.size >= cacheMaxEntries) {
+      const oldestAgentId = cachedByAgent.keys().next().value as string | undefined;
+      if (oldestAgentId === undefined && !cachedByAgent.has(undefined)) break;
+      cachedByAgent.delete(oldestAgentId);
+    }
+    cachedByAgent.set(kbAgentId, {
+      corpus,
+      expiresAt: Date.now() + cacheTtlMs,
+    });
+  };
+
+  const loadCorpus = async (kbAgentId?: string): Promise<LoadedCorpus> => {
     const now = Date.now();
-    if (cacheTtlMs > 0 && cached && now < cached.expiresAt) return cached.corpus;
+    if (cacheTtlMs > 0) pruneCachedCorpora(now);
+    const cached = cachedByAgent.get(kbAgentId);
+    if (cacheTtlMs > 0 && cached && now < cached.expiresAt) {
+      // Mapの挿入順をLRU順として使う。default(undefined)も他agentと同じ1枠。
+      cachedByAgent.delete(kbAgentId);
+      cachedByAgent.set(kbAgentId, cached);
+      return cached.corpus;
+    }
+
+    let loading = loadingByAgent.get(kbAgentId);
     if (!loading) {
-      loading = options.loadEntries().then(buildCorpus);
+      // default 経路では従来どおり引数なしで loader を呼び、named のときだけ scope を渡す。
+      loading = (kbAgentId === undefined
+        ? options.loadEntries()
+        : options.loadEntries(kbAgentId)
+      ).then(buildCorpus);
+      loadingByAgent.set(kbAgentId, loading);
     }
     try {
       const corpus = await loading;
       if (cacheTtlMs > 0) {
-        cached = { corpus, expiresAt: Date.now() + cacheTtlMs };
+        cacheCorpus(kbAgentId, corpus);
       }
       return corpus;
     } finally {
-      loading = null;
+      if (loadingByAgent.get(kbAgentId) === loading) {
+        loadingByAgent.delete(kbAgentId);
+      }
     }
   };
 
   return {
-    async retrieve({ question }) {
-      return toRetrievalResult(await loadCorpus(), question, topK, maxCharsPerEntry);
+    async retrieve({ question, kbAgentId }) {
+      return toRetrievalResult(
+        await loadCorpus(kbAgentId),
+        question,
+        topK,
+        maxCharsPerEntry
+      );
     },
   };
 }

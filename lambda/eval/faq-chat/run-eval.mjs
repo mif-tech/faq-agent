@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * FAQチャット回帰評価ランナー（#37 / issue #85）
+ * FAQチャット回帰評価ランナー
  *
  * regression-set.jsonl の各質問を n 回ずつ評価し、期待ラベルで採点する。
  * transport は api / recorded / mock の3モードから選べる（既定 api）。
@@ -48,7 +48,7 @@
  *   partial : 同上が望ましい（拒否は機会損失。ただし不正確な断定より安全）
  *   clarify : 有効応答ならどちらでも合格（聞き返し/解釈併記の回答が理想）
  *   refuse  : 素の refuse が必須（scope_fallback は不合格=拒否goldの保護、kb_answer は過剰回答の疑い → 要目視）
- *   scope_fallback : refuse + scopeFallback:true（案内型非回答）が必須（#37 PR3。安全性ゲートは refuse のみ）
+ * scope_fallback : refuse + scopeFallback:true（案内型非回答）が必須（安全性ゲートは refuse のみ）
  *   ※ HTTP失敗・非JSON・未知のresponseTypeは「無効試行」で、どのラベルの合格にも数えない
  *   ※ failureKind 付きの refuse（切断・封筒不正・時間切れ等の技術失敗）はリトライで救済を試み、
  *     残った分は投票に参加しない（model_refusal だけは意味的拒否として投票する）
@@ -68,7 +68,7 @@ import { ACTUAL_CLASSES, classifyActual, isTechnicalTrial, passOf, VALID_RESPONS
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // v2: 技術失敗（切断・時間切れ等）を意味的拒否から分離（単発質問の投票規則）
 // v3: refuse / scope_fallback の4象限厳格化（refuse gold は flagged refuse で不合格）+
-//     pilot-023 の gold 付け替え（#37 PR3）。v2以前の baseline とは投票規則が異なるため比較不可
+// pilot-023 の gold 付け替え。v2以前の baseline とは投票規則が異なるため比較不可
 const SCORING_VERSION = 3;
 const EPISODE_SCHEMA_VERSION = 1; // エピソード（会話ラリー）評価の形式版数
 // 採点の純粋ロジック（分類・4象限判定）は scoring.mjs に分離
@@ -76,7 +76,7 @@ const EPISODE_SCHEMA_VERSION = 1; // エピソード（会話ラリー）評価�
 // scope_fallback は単発ラベルとしても使える（refuse とは厳密区別・安全性ゲートは refuse のみ）
 const LABELS = ['answer', 'partial', 'clarify', 'refuse', 'scope_fallback'];
 // エピソードの期待routeレジストリ（単一の正）。応答契約の拡張（clarify/scope_fallback =
-// codex設計 PR2/3/4）が入ったら、ここの supported/actual を更新し、あわせて
+// 将来フェーズ）が入ったら、ここの supported/actual を更新し、あわせて
 // VALID_RESPONSE_TYPES にも新しい responseType を追加すること（同期点はこの2箇所。
 // 混同行列の列 ACTUAL_CLASSES は VALID_RESPONSE_TYPES から派生する）
 const ROUTES = {
@@ -84,7 +84,7 @@ const ROUTES = {
   refuse: { actual: 'refuse', supported: true },
   chat: { actual: 'chat', supported: true },
   clarify: { actual: null, supported: false },
-  // #37 PR3で発動。actual は classifyActual の派生クラス（refuse + scopeFallback:true）
+  // 発動済み。actual は classifyActual の派生クラス（refuse + scopeFallback:true）
   scope_fallback: { actual: 'scope_fallback', supported: true },
 };
 const FETCH_TIMEOUT_MS = 60_000; // 実測でp95は20s前後。ハングだけを切る
@@ -186,7 +186,7 @@ if (baselineFile) {
         '投票母集団が異なるため比較できません。現在の採点方式でベースラインを取り直してください'
     );
   // mode が違うベースライン（例: mock のスタブ固定応答 vs api 実行）は母集団が別物で、
-  // 偽の degraded / 偽の改善として読まれる。scoringVersion と同じ厳格さで止める（PR#123 レビュー指摘）
+  // 偽の degraded / 偽の改善として読まれる。scoringVersion と同じ厳格さで止める（レビュー指摘）
   {
     const baselineMode = baseline.mode ?? 'api';
     if (baselineMode !== mode)
@@ -325,7 +325,7 @@ if (resolvedRecordFile) {
     fail(`--record の出力先を準備できません (${resolvedRecordFile}): ${e.message}`);
   }
   // 「先頭行が header」を不変条件にする: 非空ファイルへの追記は拒否し、header はここで 1 回だけ書く
-  // （呼び出し 0 件でも header だけのファイルになる / PR#129 レビュー指摘）
+  // （呼び出し 0 件でも header だけのファイルになる / レビュー指摘）
   let existing = '';
   try {
     existing = fs.readFileSync(resolvedRecordFile, 'utf8');
@@ -333,7 +333,7 @@ if (resolvedRecordFile) {
     existing = '';
   }
   if (existing.trim().length > 0) {
-    // 前回が header を書いた直後に中断した残骸（header 1 行のみ）は上書きを許す（PR#129 レビュー指摘）
+    // 前回が header を書いた直後に中断した残骸（header 1 行のみ）は上書きを許す（レビュー指摘）
     const lines = existing.split('\n').filter((line) => line.trim());
     let headerOnly = false;
     if (lines.length === 1) {
@@ -357,7 +357,7 @@ if (resolvedRecordFile) {
 const resolvedRecordingFile = recordingFile ? path.resolve(recordingFile) : null;
 // 再生キーは (id, trial, turn)。turn = その呼び出しで送った messages の長さ（エピソードのターン進行）。
 // 同一キーの複数行は「同じターンのリトライ」としてファイル順に消費する。以前の (id, trial) キーでは
-// リトライが次ターンの録画行を食い、以降のターンがズレたまま採点されえた（PR#123 レビュー指摘）
+// リトライが次ターンの録画行を食い、以降のターンがズレたまま採点されえた（レビュー指摘）
 const recordingQueues = new Map();
 let recordingHeader = null;
 const recordingKey = (id, trial, turn) => `${id}\u0000${trial}\u0000${turn}`;
@@ -403,7 +403,7 @@ if (mode === 'recorded') {
   }
 }
 // 録画がどのセットで取られたかを照合する。--set を書き換えたのに ID が同じなら旧応答で黙って通る
-// fail-open を塞ぐ（PR#123 レビュー指摘）。header の無い旧録画は警告のみ
+// fail-open を塞ぐ（レビュー指摘）。header の無い旧録画は警告のみ
 if (mode === 'recorded') {
   if (!recordingHeader) {
     console.warn('警告: --recording に header 行がありません（fixtureHash を照合できません。--record で取り直しを推奨）');
@@ -412,7 +412,7 @@ if (mode === 'recorded') {
     // 「スタブ固定応答 vs 実応答」の偽 degraded になるため、baseline.recordingMode と突き合わせる
     if (baseline) {
       // scoringVersion / mode と同じ厳格さ: baseline 側に recordingMode が無い（本機能以前の録画再生）場合も
-      // 録画元を照合できないので不一致として止める（片側 null の無警告スキップは fail-open / PR#129 レビュー指摘）
+      // 録画元を照合できないので不一致として止める（片側 null の無警告スキップは fail-open / レビュー指摘）
       const baselineRecordingMode = baseline.recordingMode ?? null;
       const currentRecordingMode = recordingHeader.mode ?? null;
       if (baselineRecordingMode !== currentRecordingMode)
@@ -493,7 +493,7 @@ function normalizeResponse({ status, body, elapsedMs, retryAfterSec = 0, transpo
     sources: Array.isArray(body?.sources) ? body.sources.map((s) => s?.topic).filter(Boolean) : [],
     // 技術失敗の機械可読分類（handler.ts が refuse に付与。意味的拒否には付かない）
     failureKind: typeof body?.failureKind === 'string' ? body.failureKind : null,
-    // 範囲内だが資料不足の案内型（refuse + 直交フラグ / #37 PR3）
+    // 範囲内だが資料不足の案内型（refuse + 直交フラグ）
     scopeFallback: body?.scopeFallback === true,
     invalid,
     retryAfterSec,
@@ -708,7 +708,7 @@ async function createMockTransport(entries) {
       })
     );
     // Lambda context スタブ（時間予算 30s）。呼び出し側の {id, trial} とは別物なので名前を分ける
-    // （同名にすると引数が外側を隠し、handler の時間予算経路が mock で死ぬ / PR#129 レビュー指摘）
+    // （同名にすると引数が外側を隠し、handler の時間予算経路が mock で死ぬ / レビュー指摘）
     const lambdaContext = { getRemainingTimeInMillis: () => 30_000 };
     return async (messages, callContext) => {
       const started = Date.now();

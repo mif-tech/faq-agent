@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Free FAQ character bigram retrieval contract tests / issue #120 run4. */
+/** Free FAQ character bigram retrieval contract tests / . */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -152,7 +152,66 @@ test('ロード済み corpus は cacheTtlMs 内で再利用する', async () => 
   assert.equal(loadCount, 1);
 });
 
-// ---- PR#124 レビュー対応: メトリクス用トレースの上限と topic 無害化（production と同規則） ----
+test('corpus cacheはkbAgentIdごとに分離し、default loaderだけ引数を省略する', async () => {
+  const loadCalls = [];
+  const port = createSimpleRetrievalPort({
+    loadEntries: async (...args) => {
+      loadCalls.push(args);
+      const kbAgentId = args[0];
+      return [
+        {
+          id: kbAgentId ?? 'default-entry',
+          topic: '営業時間',
+          content: `${kbAgentId ?? 'default'} の営業時間です。`,
+        },
+      ];
+    },
+    cacheTtlMs: 60_000,
+  });
+
+  const defaultFirst = await port.retrieve({ question: '営業時間' });
+  const salesFirst = await port.retrieve({ question: '営業時間', kbAgentId: 'sales' });
+  const supportFirst = await port.retrieve({ question: '営業時間', kbAgentId: 'support' });
+  const salesCached = await port.retrieve({ question: '営業時間', kbAgentId: 'sales' });
+  const defaultCached = await port.retrieve({ question: '営業時間' });
+
+  assert.equal(defaultFirst.entryIdByRef.get('K1'), 'default-entry');
+  assert.equal(defaultCached.entryIdByRef.get('K1'), 'default-entry');
+  assert.equal(salesFirst.entryIdByRef.get('K1'), 'sales');
+  assert.equal(salesCached.entryIdByRef.get('K1'), 'sales');
+  assert.equal(supportFirst.entryIdByRef.get('K1'), 'support');
+  assert.deepEqual(loadCalls, [[], ['sales'], ['support']]);
+});
+
+test('corpus cacheはLRU上限を守り、直近で参照したagentを保持する', async () => {
+  const loadCalls = [];
+  const port = createSimpleRetrievalPort({
+    loadEntries: async (...args) => {
+      loadCalls.push(args);
+      const kbAgentId = args[0];
+      return [
+        {
+          id: kbAgentId ?? 'default-entry',
+          topic: '営業時間',
+          content: `${kbAgentId ?? 'default'} の営業時間です。`,
+        },
+      ];
+    },
+    cacheTtlMs: 60_000,
+    cacheMaxEntries: 2,
+  });
+
+  await port.retrieve({ question: '営業時間' });
+  await port.retrieve({ question: '営業時間', kbAgentId: 'sales' });
+  await port.retrieve({ question: '営業時間' });
+  await port.retrieve({ question: '営業時間', kbAgentId: 'support' });
+  await port.retrieve({ question: '営業時間' });
+  await port.retrieve({ question: '営業時間', kbAgentId: 'sales' });
+
+  assert.deepEqual(loadCalls, [[], ['sales'], ['support'], ['sales']]);
+});
+
+// ---- レビュー対応: メトリクス用トレースの上限と topic 無害化（production と同規則） ----
 
 test('metricCandidates は上位20件に截断され、topic は制御文字/"<"除去＋30コードポイントに截断される', async () => {
   const longTopic = 'あ'.repeat(40) + '<script>';

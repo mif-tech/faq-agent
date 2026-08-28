@@ -1,4 +1,4 @@
-/** FAQ orchestration と KB injection が共有する search-plan 有界化ポリシー。 */
+/** FAQ orchestration と KB injection が edition 間で共有する search-plan 有界化ポリシー。 */
 export type SearchPlanTextOverflowPolicy = 'drop' | 'truncate';
 
 export interface BoundedPlanTexts {

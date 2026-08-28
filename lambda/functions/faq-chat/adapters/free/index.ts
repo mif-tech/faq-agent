@@ -8,7 +8,7 @@ import { dynamoDbFaqKbSource } from './dynamodb-entries.js';
 import { createGroundedDemoGenerationPort } from './grounded-demo-generation.js';
 import { buildSimpleAnswerSystemPrompt } from './simple-answer-prompt.js';
 import { createSimpleRetrievalPort } from './simple-retrieval.js';
-import type { FaqKbSourcePort } from '../../ports/storage.js';
+import type { FaqAgentConfigPort, FaqKbSourcePort } from '../../ports/storage.js';
 
 export interface FreeFaqPortsOptions {
   kbSource?: FaqKbSourcePort;
@@ -28,6 +28,11 @@ export interface FreeFaqPortsOptions {
 }
 
 const DEFAULT_FREE_MODEL = 'claude-haiku-4-5-20251001';
+const unavailableAgentConfig: FaqAgentConfigPort = {
+  async resolveAgentProfile() {
+    return null;
+  },
+};
 
 function resolveGuardBusinessTerms(option: readonly string[] | undefined): readonly string[] {
   const raw = option ?? (process.env.FAQ_GUARD_BUSINESS_TERMS ?? '').split(',');
@@ -57,7 +62,12 @@ export function createFreeFaqPorts(
 
   return {
     retrieval: createSimpleRetrievalPort({
-      loadEntries: () => (options.kbSource ?? dynamoDbFaqKbSource).loadPublicEntries(),
+      loadEntries: (kbAgentId) => {
+        const kbSource = options.kbSource ?? dynamoDbFaqKbSource;
+        return kbAgentId === undefined
+          ? kbSource.loadPublicEntries()
+          : kbSource.loadPublicEntries(kbAgentId);
+      },
       ...(options.topK === undefined ? {} : { topK: options.topK }),
       ...(options.maxCharsPerEntry === undefined
         ? {}
@@ -72,6 +82,8 @@ export function createFreeFaqPorts(
       ? { guardVocabulary: { businessTerms: guardBusinessTerms } }
       : {}),
     answerPrompt: { buildSystemPrompt: buildSimpleAnswerSystemPrompt },
+    // canonical free profile は named agent を構成しない。overlay composition が明示的に差し替える。
+    agentConfig: unavailableAgentConfig,
     defaultModel: process.env.FAQ_FREE_MODEL || DEFAULT_FREE_MODEL,
   };
 }

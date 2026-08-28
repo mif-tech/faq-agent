@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.2.4-alpha",
-  "canonicalHead": "358d4debd130130000859edbc195509c3f965094",
-  "fileCount": 71,
+  "sourceRef": "v0.3.0-alpha",
+  "canonicalHead": "f0f49895c71526938d7f90d684b209479e7f3d16",
+  "fileCount": 96,
   "files": [
     {
       "path": ".gitattributes",
@@ -26,12 +26,12 @@
     },
     {
       "path": "docs/QUICKSTART_FAQ_LOCAL.md",
-      "sha256": "acde7426c1d4b8c44ca36c8050323295c86e769e44d696a536b2dbe479a9c006",
+      "sha256": "d06e4cf3cd681704760889c89a271320e3eee71a16085ea86e0d0ec6ec0e82df",
       "origin": "overlay"
     },
     {
       "path": "faq/app.js",
-      "sha256": "e6c4515fa4309ab26c6b362736609762a26cf6ae488f1681b212e56cff52da0e",
+      "sha256": "98b32ce8f85dffb4329437a5b35b71ca5f3d13511c95fb77d07494e8a3b03b73",
       "origin": "allowlist"
     },
     {
@@ -41,27 +41,27 @@
     },
     {
       "path": "faq/index.html",
-      "sha256": "708d1e8bcb394edfe96061101f00abed6f0e8777cb841325eecc96b0f48e1732",
+      "sha256": "3ddac65ad1f33f733ea5f278105687d61f1a7f7b27165bfa678c6396ef3a5883",
       "origin": "allowlist"
     },
     {
       "path": "faq/style.css",
-      "sha256": "feb68ffd8d86a4c4e6dbb38999b8e3b4e50695ded761633e32a4ae22d7b44c75",
+      "sha256": "6bf9c92969c62398c968b50b6c5e5717a24bb610e2c14e6705cae3d7fc437456",
       "origin": "allowlist"
     },
     {
       "path": "lambda/eval/faq-chat/compare-parity.mjs",
-      "sha256": "79016f69dab5b61727de3686a78911c4a6a969edf66f6c759c83ffda02f7b9d4",
+      "sha256": "b97c325f6032f08fe232eb3a9b888ccc53cf1500b63352f3197315ded07ab0ae",
       "origin": "allowlist"
     },
     {
       "path": "lambda/eval/faq-chat/README.md",
-      "sha256": "3e9069df7f5f9f048e4237d772657e40f0594a7c5b92dd35a04e7159a727c801",
+      "sha256": "c082c95cd03d508046d3e5db03f5731353d76e3e59aeeeda4b4829baa104a3a0",
       "origin": "allowlist"
     },
     {
       "path": "lambda/eval/faq-chat/run-eval.mjs",
-      "sha256": "c284b771fd41af5da55e926df67d262bca5dde17363bf045af44cbc6f2d7b58a",
+      "sha256": "ce4835c8ee0a76f4bd9f9fea2255c00610dc2e414aad0dd0331ce3f093e29c69",
       "origin": "allowlist"
     },
     {
@@ -81,8 +81,18 @@
     },
     {
       "path": "lambda/eval/faq-chat/scoring.mjs",
-      "sha256": "e7a7828541225a896fd55de910aed83124343d21006b3ae9c6f3295183bddb78",
+      "sha256": "cf33fd5ecc9ca36700274f9484e66944a3c22a4bc0ae298797d2444f25f6201f",
       "origin": "allowlist"
+    },
+    {
+      "path": "lambda/functions/faq-chat/adapters/free/agent-config.ts",
+      "sha256": "5812a8ee7691a0cc415dc206c4c79eb9f8b1aacc7d1d8b5483dac9b36cfb996f",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/functions/faq-chat/adapters/free/agent-profile.ts",
+      "sha256": "d9f582c0fe42f1137b0d280ae4481b0006d1ead2b1321ae15d4418f890da4162",
+      "origin": "overlay"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/anthropic-generation.ts",
@@ -96,17 +106,17 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/dynamodb-entries.ts",
-      "sha256": "fb2d7ae0bb0a70f17ea5574d6c323f48b97add9a14e8c4fd11eed622130c3994",
+      "sha256": "4a8056c1a911eaa323bf761b506c8cd4735dbb2f628f6d62b8b844c472de27dc",
       "origin": "overlay"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/grounded-demo-generation.ts",
-      "sha256": "3d20a58570200572c496e6686dc64e8a78e42340367c445e9e8f55664b2b7280",
+      "sha256": "4f2b9609f82f73e358059e2c0efa4a09552cd4ac2197bcf7ec6e55747bd9a41e",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/index.ts",
-      "sha256": "0e32c72f1f1d448f1f72d86ac23d711e1098c2df71c66dc9e77314fe4ff3897e",
+      "sha256": "7eae917aefe97aadc99b083793a5564c12cb70c7101a2231a6dda8d1f045f754",
       "origin": "allowlist"
     },
     {
@@ -116,22 +126,22 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/simple-retrieval.ts",
-      "sha256": "90ddcb53c3ff82d6448538a2967fdfce74083684f0b5d87113d9bf4b38e1d1f8",
+      "sha256": "85cb183ce958993cb7d2e7357993f614fc471fd549b39b07d3ccec10e37a3167",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/production.ts",
-      "sha256": "787780c0ad4d553b6549d8e16c0140d381646992ea443b41bdd11b6033deb91d",
+      "sha256": "841efa55914f54ed91e356076d50a571da240733f940b81aaaf19e757155699a",
       "origin": "overlay"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/contract.ts",
-      "sha256": "149ff4a091e17b431731c8657afc27d93dffff415b11f72263be023460b869e4",
+      "sha256": "72c2aad46a60f6403f6ea89b07d35408c31b58edc2850ec3aabb66933c0bee6f",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/http-client.ts",
-      "sha256": "e8cdf2027e05f066e36257954e8354ff53cba85525fcd0842b4a534421014f98",
+      "sha256": "0c39f979acc799ec97e1d79a116ac803cc64957cf893938107045e2fc0475914",
       "origin": "allowlist"
     },
     {
@@ -141,7 +151,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/stub.ts",
-      "sha256": "8d78d35459f456ca226574a54ea056bd036581bdc3360a08139a9836e6d00355",
+      "sha256": "5bb62b8228ec18c508cfd96d487341d56aa477b495b5aa88315afdc215310940",
       "origin": "allowlist"
     },
     {
@@ -151,32 +161,32 @@
     },
     {
       "path": "lambda/functions/faq-chat/composition.ts",
-      "sha256": "137d889f9d0ffcc29c6a49664f24619751e1c436432004e691abc581303634d3",
+      "sha256": "c61903082bd9cb220f035ae86668f6d3310c29d5cf421457a28d1fa67f8990cc",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/envelope.ts",
-      "sha256": "964e92db43c7e4218b3465fc32026401ea71a12702a72b30d20abe301e7fdb06",
+      "sha256": "69d1fee9f08e3c80fe6ad89f971d0015e55a15e045a31078c51e9e3994b55d47",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/handler.ts",
-      "sha256": "99545fd791f19e24f2aa7391399d95e845c32783d0c1c72a170aa9eeeee1b50d",
+      "sha256": "64fc0d69f920c540e2b1521b6b153f51980f6267e6c6cd960c503a41ff9cc8df",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/infra/lite-dynamodb.ts",
-      "sha256": "b0f32bcb04a115ccdf5109af481369d2eeb0c26484589b4a1dba65e2521a5c91",
+      "sha256": "1d1abdbef47b6a8947a4cdafce3d5a4b6b28599853bf45cf9195032631b75b99",
       "origin": "overlay"
     },
     {
       "path": "lambda/functions/faq-chat/ports/generation.ts",
-      "sha256": "233dc20a69e42877c6b19ad9b7c8b1391c9aea188cbac82c892d05408cd0aa80",
+      "sha256": "072b0dadd0f34049cbf688a884faa56a9711d6b5e02b748db092c9b3710f90a8",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/ports/index.ts",
-      "sha256": "900c60787a3973ba0d7d5ce4333b73ce55d0c0e829f9fd8cbe223e0d2be84960",
+      "sha256": "57f2fde33c1aa8c0752b5349cc68a7ce6e075abd6563a16ab90a6bf8ea1f3ed9",
       "origin": "allowlist"
     },
     {
@@ -186,12 +196,12 @@
     },
     {
       "path": "lambda/functions/faq-chat/ports/retrieval.ts",
-      "sha256": "c49bb7efa926d909b27dc3d0e1bfd7f67f7e76ff059aa9d3ad51bd68c0e9b42b",
+      "sha256": "9b931df0c52550d7d1ac26a67778d547c16f1cce5020b25207af251099f956d3",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/ports/storage.ts",
-      "sha256": "29aa2339c85b8b33f76906383f7f5d3ea8209e1f7d1096532d407648d25605bf",
+      "sha256": "f8331e9284e5564be405f0e1390b7d9d6a737c2844f5265122ba4307ddaaecfe",
       "origin": "allowlist"
     },
     {
@@ -200,13 +210,23 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/functions/slack-agent-worker/handler.ts",
+      "sha256": "38ef0e97ee642ad0018575dea65d17f1a0d67519eb20b5d5fdfc618b7557cfef",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/functions/slack-ingress/handler.ts",
+      "sha256": "51840acddea38576e973347a8c19cae68eca9671f3358c0686d452919612204d",
+      "origin": "overlay"
+    },
+    {
       "path": "lambda/package-lock.json",
       "sha256": "ff37a169963fc0afbf5398602fb9cb9b4bc37c8aac7657b20a582c55729609a7",
       "origin": "overlay"
     },
     {
       "path": "lambda/package.json",
-      "sha256": "30c0ff71256d57046ea8afd520d8a9b89e502333946a49b8e4acba669d469852",
+      "sha256": "510e9b211486b765a13299188132d9cb49da23cc25031061adf6fe6ab1cd9b73",
       "origin": "overlay"
     },
     {
@@ -215,83 +235,168 @@
       "origin": "overlay"
     },
     {
-      "path": "lambda/shared/search-plan-bounds.ts",
-      "sha256": "cbe77118d12380a8dff1f40a93c16d9fbc2d7a45a062fbfec2574688cbd51b19",
+      "path": "lambda/shared-lite/slack-agent-composition.ts",
+      "sha256": "0eab069498c2c30e79404b545af5fa13d378eeacaa8c27314b93b2ff040b1ce6",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared-lite/slack-agent-config.ts",
+      "sha256": "3398009620b1c9128e1e7d213c605ac3edc2251cc5ecd5885393b204f24eeb5e",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared-lite/slack-agent-policy.ts",
+      "sha256": "b30ea235fcfea520a90821b19666a8c03e65b470637ac0a251be255cb9a40c97",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared-lite/slack-agent-qa-log-dynamo.ts",
+      "sha256": "6a797a856f0bfd5262e928b2f138d17c88b27af63ff709351011548f4b3bd87f",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared-lite/slack-kb.ts",
+      "sha256": "e170b70b94117b92681c6d75fce8348f9feeef06a61bd4df9f98b9c706a25959",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared-lite/slack-sqs.ts",
+      "sha256": "82a2742aa5910750ef4c5c1d04a1e063d60a5a3f39f30da9d2b98a02909bd461",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/shared/public/agent-cache.ts",
+      "sha256": "5b888fac5b4efc68e1f1d60ea4d5de1449552b437b474d23b9e80099446eaf25",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/search-plan-bounds.ts",
+      "sha256": "5248147012254a5e6d17669a57028c531a968790a9f472ce3b36e6879dc0d839",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-agent-composition.ts",
+      "sha256": "3f391d02ab9f991f9ef3b7969fac0605c87ff371ff6322cec35134831ac4eb3a",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-agent-contract.ts",
+      "sha256": "14c6f4a28aa4421ff1fa2094e73c76f9f79dde5c6248ea6044a89ae397eee8bd",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-agent-ports.ts",
+      "sha256": "a738e9dfd0c78250d4f245c19b4adb8ebb81e8a19dcf195db4724e5e789a926b",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-agent-qa-log.ts",
+      "sha256": "14956f1c68a8f7b8e28b548def7ec00b4f55091b67c12feed976979b748b2a8e",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-api.ts",
+      "sha256": "4f28d2f826b4e9333e034b1f0fb880f6ba2870d93dd28d91e07d594cb179149a",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-idempotency.ts",
+      "sha256": "567191b7367ebc50306f10c08e910bb1a35272aa8b4bae11047a20894156272d",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-ingress-core.ts",
+      "sha256": "4cfa484b146946cb58ab02eec3edeeebf82129d828d1922fb3f28ab5fd611116",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-verify.ts",
+      "sha256": "7c188afed41afbc85093a00bf8f90179b1de3ff31e98e1a83cc1348619a99e8d",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/shared/public/slack-worker-core.ts",
+      "sha256": "ae755cc30be517374e6237ade1d6f3376965b8fb178cdba01362b24e32bdaa64",
       "origin": "allowlist"
     },
     {
       "path": "lambda/template.yaml",
-      "sha256": "0af5a009b49079579229f3b632291dbd00ef873770c119cdf0ad99233f898410",
+      "sha256": "e1e4f95b0eec2ee0451f257c546e441c32eac8f9e8a860c65dfcf669841de2c6",
       "origin": "overlay"
     },
     {
       "path": "lambda/tests/faq-chat-envelope.test.mjs",
-      "sha256": "426b9de47d05df9ab8844a4c20f941ad39e72b60e8d3ebe6404769697de52a15",
+      "sha256": "d031816ddd06fb4d1166f7db6c8425cba5842a90d1c5d5fbe81691f8556b7923",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-eval-parity.test.mjs",
-      "sha256": "08cd024023a99d8ae34d341a999046c5e21f9fc267ed53f6bd8943c8978a9b32",
+      "sha256": "f7224643b7db7927d026f28dd8e253374111c1aaea66561ab27e7033d1162206",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-eval-runner.test.mjs",
-      "sha256": "42a9cf016c566965619917e365d7ff0433799e5c7ae6f9469035955533756e05",
+      "sha256": "abc05329244ab7292272bc70b421a2cafc315f4d63ff0e024ca4104ae4ae4078",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-eval-scoring.test.mjs",
-      "sha256": "c9090433c1a838d32b54b030f820690d0bd313e67657e6333970866162246ac8",
+      "sha256": "a015a3ef610408650ca70532d0936560be633416b73a20042268f601e1e3a1a3",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-free-generation.test.mjs",
-      "sha256": "f9d83ea9615581c214f2f37c62909ba1870116936bdde88c4a0a455ed8adb79c",
+      "sha256": "da5b9731385abdb195a6c326a541f68db205eb9771226119e59310609a5d3621",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-free-retrieval.test.mjs",
-      "sha256": "c1bd35340eb6d47d62a9096572f11f884c89a1cd61a00410758404f9b192eb6b",
+      "sha256": "f4a8525800b47ef3f91041f8cecbce4ed898807506e99dd77b7a9696d9a4a808",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-handler.test.mjs",
-      "sha256": "dc76402183929066f4418fcd42a0755bf9b94db859c0eea6ff44c7ccf387fbd2",
+      "sha256": "43fd72cf547baeea137b42fccbba3f2fde09cc26f72ddef02d44e1feb10d740b",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-iam-boundary.test.mjs",
-      "sha256": "2710c37bfa5e6391c527b3a014432d6b21682e3f8d5757d3031a645ebdc13b43",
+      "sha256": "d2187b639b8ea38a34d5a30e733dcde8b2d43727a2382fd6c90a2d9c00690c06",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-lite-adapters.test.mjs",
-      "sha256": "cc074012997e89437fc78538a1bb5a1c0383069f673f379476cbf254080549b1",
+      "sha256": "7df6c6c1942d549abd59c4cc90bee77f25f90dc18477f960de2810a20b97c19e",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/tests/faq-chat-lite-multi-agent.test.mjs",
+      "sha256": "aa27596c10562f4b92de1c53d61312794ccd9b489458ba53d2e2b490b2b14de4",
       "origin": "overlay"
     },
     {
       "path": "lambda/tests/faq-chat-lite-remote-template.test.mjs",
-      "sha256": "f81be0551f6414e2b2d2b2e6a0198f3113449363b5212a2426e1b935c5368b42",
+      "sha256": "8e14b088152cd50951bd616a0ca6183b3dd54b01d55cf7cb77dde8acea23dc51",
       "origin": "overlay"
     },
     {
       "path": "lambda/tests/faq-chat-remote-http-client.test.mjs",
-      "sha256": "77f7c8e686004233c73479b471d9124d8916eff4fe3ce1b7798b0700d2857807",
+      "sha256": "fa07442ade6136c0cf341eade1e2e5765be14366d419673fec88ab987f4e66e0",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-remote-wire.test.mjs",
-      "sha256": "8f4016a664608b033f12b09a41fd5ba88458eb5121b775d61fc3aa549cf74a56",
+      "sha256": "c708b450c274738545aad96d647aca6182b7ca7c89a4b1a9d5bffbda154b0a33",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-stub-adapter.test.mjs",
-      "sha256": "38df2aa98f16ac31dfc88f96b7106ea75f574609bf22a23fe9661b6b17c99125",
+      "sha256": "f45a89ada1c90323001f0db99d7ba5f83a3f1c42d9f4a82ce24350b9232324bd",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-local-scripts.test.mjs",
-      "sha256": "590556888e52cd9f21d43250ac20c60c91f9d7fc0ee5e506005a2c2bc2751685",
+      "sha256": "2f3e7a02817e68a5d1930f0d89d060027aed66d69cf1dd7ea00bfd9cdf550898",
       "origin": "allowlist"
     },
     {
@@ -306,8 +411,23 @@
     },
     {
       "path": "lambda/tests/search-plan-bounds.test.mjs",
-      "sha256": "5e5e5d1e51ce7a89be2834f96e8ad45907dbc46adc6ebfd8336e8cd192d1095a",
+      "sha256": "5788d3967c1c5aaebff51c352a34bf61bed6240194e5ad51dddfcd145eddcfd5",
       "origin": "allowlist"
+    },
+    {
+      "path": "lambda/tests/slack-lite-adapters.test.mjs",
+      "sha256": "2682bfe65f772cbc2a60af42460d2cd06bc0bca6ef7e4c9e3f6522ee173c43af",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/tests/slack-lite-entrypoints.test.mjs",
+      "sha256": "65b63eaed7c4e8e1fbf4aa663fca9293a04d187264e7d28b36bc662a8fbddf2e",
+      "origin": "overlay"
+    },
+    {
+      "path": "lambda/tests/slack-lite-template.test.mjs",
+      "sha256": "599c84b10ca5495f152cc6af37fc662ea9c11bdf5390af0e7dae80075f52d53a",
+      "origin": "overlay"
     },
     {
       "path": "lambda/tsconfig.json",
@@ -331,7 +451,12 @@
     },
     {
       "path": "README.md",
-      "sha256": "f00199d58bcbca11734fd719d81d3a1c23a99d531c5eccb7813da487a752347d",
+      "sha256": "417fa9facbafcd38bb7f498b012ba9e0e58668db82af6f6cf6a6935dbfe0fcc2",
+      "origin": "overlay"
+    },
+    {
+      "path": "scripts/agent-config-cli.ts",
+      "sha256": "0efc224a20b131824b06b9e151cf0f9e02b337ec7b99aea791ca09557ec6a13c",
       "origin": "overlay"
     },
     {
@@ -351,12 +476,12 @@
     },
     {
       "path": "scripts/faq-local-up.sh",
-      "sha256": "a7a5c0e9c84844cf1fed10f3e184563879739779185b1b788f754d04bd9e4cb0",
+      "sha256": "25de01ad211cfee65892b3d8284734c0dfca88c43e1c22a0b0895a508823e188",
       "origin": "allowlist"
     },
     {
       "path": "scripts/preflight.sh",
-      "sha256": "71f510441d9b0d4a1159dd8fb5e2ee2e6629c12dff21df201c1f38f81a5e225f",
+      "sha256": "b3d7ec3fc53f04582079f88c9877d301c4b65048cdd040ef47af11fad5d66c31",
       "origin": "allowlist"
     }
   ]

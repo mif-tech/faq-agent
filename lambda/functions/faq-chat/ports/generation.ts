@@ -33,7 +33,7 @@ export interface FaqAnswerGenerationPort {
    * この実装が `jsonSchema`（構造化出力）を実際にプロバイダへ渡すか。省略時は true（互換）。
    * handler はモデル名の allowlist と **AND** で判定し、false なら jsonSchema を渡さず
    * `structured_output_used=false` を記録する。フリー版の汎用 adapter は jsonSchema を使わないため
-   * false（さもないと allowlist 該当モデルで偽陽性が出て eval 比較が歪む / PR#124 レビュー指摘）
+   * false（さもないと allowlist 該当モデルで偽陽性が出て eval 比較が歪む / レビュー指摘）
    */
   readonly supportsStructuredOutput?: boolean;
 }
