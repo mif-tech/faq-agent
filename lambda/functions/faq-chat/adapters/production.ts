@@ -1,4 +1,5 @@
 import { createFreeFaqPorts } from './free/index.js';
+import { dynamoDbFaqAgentConfig } from './free/agent-config.js';
 import { dynamoDbFaqKbSource } from './free/dynamodb-entries.js';
 import type { FaqPorts } from '../ports/index.js';
 import type { FaqChatSettings, FaqStoragePort } from '../ports/storage.js';
@@ -40,6 +41,7 @@ const storage: FaqStoragePort = {
 export function createProductionFaqAdapters(): ProductionFaqAdapters {
   return {
     ...createFreeFaqPorts({ kbSource: dynamoDbFaqKbSource }),
+    agentConfig: dynamoDbFaqAgentConfig,
     storage,
   };
 }

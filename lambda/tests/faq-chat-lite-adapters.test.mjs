@@ -14,6 +14,7 @@ const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'faq-lite-adapters-test-'
 const TABLE_ENV_NAMES = [
   'FAQ_TABLE_NAME_PREFIX',
   'FAQ_SETTINGS_TABLE_NAME',
+  'FAQ_AGENT_CONFIG_TABLE_NAME',
   'FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME',
   'FAQ_QA_LOGS_TABLE_NAME',
 ];
@@ -24,6 +25,7 @@ function tableEnvironment(prefix = 'prod-candidate') {
   return {
     FAQ_TABLE_NAME_PREFIX: prefix,
     FAQ_SETTINGS_TABLE_NAME: `${prefix}-Settings`,
+    FAQ_AGENT_CONFIG_TABLE_NAME: `${prefix}-AgentConfig`,
     FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: `${prefix}-KnowledgeEntries`,
     FAQ_QA_LOGS_TABLE_NAME: `${prefix}-FaqQaLogs`,
   };
@@ -158,6 +160,7 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
 
   assert.deepEqual(module.LiteTableNames, {
     Settings: 'prod-candidate-Settings',
+    AgentConfig: 'prod-candidate-AgentConfig',
     KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
     FaqQaLogs: 'prod-candidate-FaqQaLogs',
   });
@@ -172,6 +175,7 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
 
   assert.deepEqual(module.resolveLiteTableNames(candidateEnvironment), {
     Settings: 'prod-candidate-Settings',
+    AgentConfig: 'prod-candidate-AgentConfig',
     KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
     FaqQaLogs: 'prod-candidate-FaqQaLogs',
   });
@@ -284,6 +288,10 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
     { key: 'faq_chat' }
   );
   assert.deepEqual(
+    await module.getItem(module.LiteTableNames.AgentConfig, { agentId: 'support' }),
+    { key: 'faq_chat' }
+  );
+  assert.deepEqual(
     await module.scanAll(module.LiteTableNames.KnowledgeEntries),
     [{ entryId: 'candidate-entry' }]
   );
@@ -296,6 +304,7 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
     })),
     [
       { kind: 'GetCommand', tableName: 'prod-candidate-Settings' },
+      { kind: 'GetCommand', tableName: 'prod-candidate-AgentConfig' },
       { kind: 'ScanCommand', tableName: 'prod-candidate-KnowledgeEntries' },
       { kind: 'PutCommand', tableName: 'prod-candidate-FaqQaLogs' },
     ]
@@ -315,6 +324,7 @@ test('public production adapter delegates remote creation and keeps free/storage
     putCalls: [],
     remoteCalls: 0,
     remotePort: { kind: 'remote-http-client' },
+    agentConfigPort: { kind: 'lite-agent-config' },
     smalltalkPort: { kind: 'free-smalltalk-port' },
     settingRow: { key: 'faq_chat', value: { enabled: true, fallbackMessage: 'fallback' } },
   };
@@ -326,6 +336,10 @@ test('public production adapter delegates remote creation and keeps free/storage
     (esbuild) => {
       esbuild.onResolve({ filter: /free[\\/]index\.js$/ }, () => ({
         path: 'free-index',
+        namespace: 'lite-test',
+      }));
+      esbuild.onResolve({ filter: /free[\\/]agent-config\.js$/ }, () => ({
+        path: 'free-agent-config',
         namespace: 'lite-test',
       }));
       esbuild.onResolve({ filter: /free[\\/]dynamodb-entries\.js$/ }, () => ({
@@ -353,6 +367,11 @@ test('public production adapter delegates remote creation and keeps free/storage
         contents: "export const dynamoDbFaqKbSource = { kind: 'lite-dynamodb-kb' };",
         loader: 'js',
       }));
+      esbuild.onLoad({ filter: /^free-agent-config$/, namespace: 'lite-test' }, () => ({
+        contents:
+          'export const dynamoDbFaqAgentConfig = globalThis.__faqLiteStorageState.agentConfigPort;',
+        loader: 'js',
+      }));
       esbuild.onLoad({ filter: /^remote-http-client$/, namespace: 'lite-test' }, () => ({
         contents: `export function createRemoteFaqRagHttpClient() {
           globalThis.__faqLiteStorageState.remoteCalls += 1;
@@ -364,6 +383,7 @@ test('public production adapter delegates remote creation and keeps free/storage
         contents: `
           export const LiteTableNames = {
             Settings: 'prod-candidate-Settings',
+            AgentConfig: 'prod-candidate-AgentConfig',
             KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
             FaqQaLogs: 'prod-candidate-FaqQaLogs'
           };
@@ -386,6 +406,7 @@ test('public production adapter delegates remote creation and keeps free/storage
   const adapters = module.createProductionFaqAdapters();
   assert.equal(adapters.defaultModel, 'free-test');
   assert.strictEqual(adapters.smalltalkGeneration, state.smalltalkPort);
+  assert.strictEqual(adapters.agentConfig, state.agentConfigPort);
   assert.deepEqual(state.freeCalls, ['lite-dynamodb-kb']);
   assert.equal(state.remoteCalls, 1, 'free factory must not initialize the remote client');
   assert.deepEqual(await adapters.storage.loadSettings(), state.settingRow.value);

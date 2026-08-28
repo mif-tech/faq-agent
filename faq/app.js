@@ -1,5 +1,5 @@
 /**
- * 公開FAQチャット UI (#37 ステップ2)
+ * 公開FAQチャット UI
  *
  * - API契約: POST {apiBaseUrl}/faq-chat  { messages: [{role:'user', content}...] }
  *   → { answer, answerable, sources: [{entryId, topic, url?}] } / 503 { error }

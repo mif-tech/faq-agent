@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 // 質問側の多数決も scoring.mjs の classifyActual（scope_fallback を独立クラスとして扱う）で
 // 取る。transport の responseType 生値で比較すると refuse と refuse+scopeFallback の差が
-// 潰れ、episode 側（classifyActual 派生の route）と非対称になる（PR#147 レビュー指摘1。
+// 潰れ、episode 側（classifyActual 派生の route）と非対称になる（レビュー指摘。
 // scoring.mjs の passOf 併記の警告と同根）。isTechnicalTrial も同一実装を import し、
 // 判定が片側だけ変わって gate がサイレントに緩む重複を排除する（同指摘3）
 import { classifyActual, isTechnicalTrial } from './scoring.mjs';
@@ -61,7 +61,7 @@ function addFailure(failures, id, kind) {
 }
 
 // exit 1 = parity 退行（gate 本来のシグナル）。exit 2 = 評価基盤エラー（入力不在・fixture 不正・
-// 引数不正。run-eval.mjs の exit code 契約に合わせる。PR#147 レビュー指摘2:
+// 引数不正。run-eval.mjs の exit code 契約に合わせる。レビュー指摘:
 // パス打ち間違いと「remote が乖離した」を CI 上で同一シグナルにしない）
 function reportFailures(failures, exitCode = 1) {
   const rows = [...failures.values()].sort(
@@ -392,7 +392,7 @@ function main() {
 
   const failures = new Map();
   // 同一ファイルを両側に渡す運用ミスは自明 pass になるため基盤エラーとして拒否する
-  // （PR#147 レビュー指摘3。realpath で symlink 経路の同一指定も塞ぐ。別々のコピーを
+  // （レビュー指摘。realpath で symlink 経路の同一指定も塞ぐ。別々のコピーを
   // 渡すケースは原理的に検出できない。comparator は「別構成の実行結果である」ことまでは
   // 検証できない）
   let baselineRealPath;
@@ -430,7 +430,7 @@ function main() {
   if (failures.size > 0) {
     // メタデータ不一致（fixture hash / runs / mode / scoringVersion）は「--ids subset で
     // 回した」「--runs 3 を付け忘れた」「mock 結果を渡した」等の実行手順ミスであり、
-    // parity 退行のシグナルではないため基盤エラー扱い（PR#147 レビュー第2ラウンド指摘1）
+    // parity 退行のシグナルではないため基盤エラー扱い（レビュー第2ラウンド指摘1）
     reportFailures(failures, 2);
     return;
   }

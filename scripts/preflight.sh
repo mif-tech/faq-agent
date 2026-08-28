@@ -182,7 +182,7 @@ check_port() {
 
   if [[ -n "$listening" ]]; then
     # 自分の dynamodb-local コンテナが掴んでいる 8000 は再実行として正常（Ctrl+C で sam local だけ止めた後に
-    # faq:local:up を再実行するケース。テーブル作成・seed は冪等なのでそのまま続行できる / PR#125 レビュー指摘）
+    # faq:local:up を再実行するケース。テーブル作成・seed は冪等なのでそのまま続行できる / レビュー指摘）
     if [[ "$port" == "8000" ]] && has_command docker && [[ -n "$(docker ps -q --filter name='^dynamodb-local$' --filter publish=8000 2>/dev/null)" ]]; then
       ok "port $port: in use by this project's dynamodb-local container (re-run is fine)"
       return

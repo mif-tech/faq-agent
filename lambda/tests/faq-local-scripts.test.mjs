@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Local FAQ startup-script boundary tests / issue #120 run6a. */
+/** Local FAQ startup-script boundary tests / . */
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -151,11 +151,13 @@ test('FAQ startup injects one exact local table namespace into the lite runtime'
   assert.deepEqual(
     {
       Settings: stringProperty('FAQ_SETTINGS_TABLE_NAME'),
+      AgentConfig: stringProperty('FAQ_AGENT_CONFIG_TABLE_NAME'),
       KnowledgeEntries: stringProperty('FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME'),
       FaqQaLogs: stringProperty('FAQ_QA_LOGS_TABLE_NAME'),
     },
     {
       Settings: `${prefix}-Settings`,
+      AgentConfig: `${prefix}-AgentConfig`,
       KnowledgeEntries: `${prefix}-KnowledgeEntries`,
       FaqQaLogs: `${prefix}-FaqQaLogs`,
     }

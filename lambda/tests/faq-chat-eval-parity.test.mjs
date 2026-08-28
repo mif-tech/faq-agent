@@ -164,7 +164,7 @@ test('responseType majority mismatch fails with the question ID and kind', () =>
 });
 
 test('scope_fallback refusals do not collapse into plain refuse on the question side', () => {
-  // 質問側の多数決も classifyActual 派生クラスで取る（PR#147 レビュー指摘1）。
+  // 質問側の多数決も classifyActual 派生クラスで取る（レビュー指摘）。
   // production=素の refuse vs remote=refuse+scopeFallback は案内型非回答への挙動差であり
   // parity fail にする（episode 側・scoring.mjs の passOf 4象限と対称）
   const baseline = syntheticResult();
@@ -190,7 +190,7 @@ test('scope_fallback refusals do not collapse into plain refuse on the question 
 
 test('infrastructure failures exit 2 instead of masquerading as parity regressions', () => {
   // exit 1 = parity 退行 / exit 2 = 評価基盤エラー（run-eval.mjs の契約に整合。
-  // PR#147 レビュー指摘2・3: パス打ち間違い・同一ファイル二重指定は gate シグナルにしない）
+  // レビュー指摘・3: パス打ち間違い・同一ファイル二重指定は gate シグナルにしない）
   const baseline = syntheticResult();
   const caseDir = fs.mkdtempSync(path.join(tempDir, 'case-'));
   const baselineFile = path.join(caseDir, 'baseline.json');

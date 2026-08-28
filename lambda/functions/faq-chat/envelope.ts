@@ -5,11 +5,11 @@
  * 決定的な単体テスト（lambda/tests/faq-chat-envelope.test.mjs）を可能にすること
  * （封筒は外部APIとモデルの間の契約であり、変更のたびに表形式で固定検証する / codexレビュー指摘）。
  *
- * 封筒v2（codex設計の4型化・#37 clarify/案内型導入計画のPR2/PR3）:
+ * 封筒v2（4型化・clarify/案内型の段階導入）:
  * - responseType: answer | clarify | scope_fallback | refuse
  * - null は使わず空文字センチネル（全フィールド必須の単純なwire形式を維持する設計判断）
  * - **モデルに渡すスキーマの enum は発動済みの型のみ**（現在 answer/refuse/scope_fallback。
- *   clarify は PR4 まで未発動）。4型は TypeScript 型とパーサーが先行対応し、
+ *   clarify は将来フェーズまで未発動）。4型は TypeScript 型とパーサーが先行対応し、
  *   発動時は MODEL_ENVELOPE_RESPONSE_TYPES に追加するだけでよい
  */
 
@@ -24,8 +24,8 @@ export const FAQ_ENVELOPE_RESPONSE_TYPES: readonly FaqEnvelopeResponseType[] = [
 ];
 
 /** モデルに選択を許す型（structured outputs スキーマの enum）。発動済みの型だけを載せる。
- *  scope_fallback は #37 PR3 で発動（範囲内だが資料不足。案内文はサーバーが合成し、
- *  モデルには文面を書かせない=引用ロンダリング回避 / codex設計）。clarify は PR4 まで未発動 */
+ * scope_fallback は発動済み（範囲内だが資料不足。案内文はサーバーが合成し、
+ *  モデルには文面を書かせない=引用ロンダリング回避 / codex設計）。clarify は将来フェーズまで未発動 */
 export const MODEL_ENVELOPE_RESPONSE_TYPES: readonly FaqEnvelopeResponseType[] = [
   'answer',
   'refuse',
@@ -136,7 +136,7 @@ export function parseEnvelope(text: string): FaqEnvelope | null {
 }
 
 /**
- * Q&Aログ（#37 v1）の保存前マスク。対象は**接触先PII（メールアドレス・電話番号）のみ**——
+ * Q&Aログ（v1）の保存前マスク。対象は**接触先PII（メールアドレス・電話番号）のみ**——
  * 氏名・住所はパターン化できないため対象外で、UI告知（入力しない案内+保存の明示）でカバーする。
  * 180日保持されるPIIの唯一の防波堤のため、handler.ts から分離して単体テストで固定する
  * （PRレビュー指摘: 非exportの複雑な正規表現が回帰検知なしで動いていた）。
@@ -184,7 +184,7 @@ export type FaqGuardDetail =
  *    通常は到達不能だが、スキーマなしフォールバック時の防御として残す。
  *    技術失敗ではなく意味的拒否として扱う（retryable にしない: 曖昧質問の再送を促すと
  *    無理な回答への反転を誘発しうる / codexレビュー合意）
- *  - scope_fallback（発動済み / #37 PR3）: 全フィールドが空の正常形だけを有効（guardDetail=null）とする。
+ * - scope_fallback（発動済み）: 全フィールドが空の正常形だけを有効（guardDetail=null）とする。
  *    answer・sourceRefs・clarifyingQuestion のいずれかが非空なら scope_fallback_invalid ＝
  *    「答えられる内容があるのに型だけ fallback にした」壊れた封筒として技術失敗（再試行で救済）に
  *    分類する。無条件にガードを迂回させると有効な部分回答を黙って捨てる（codexレビュー指摘）

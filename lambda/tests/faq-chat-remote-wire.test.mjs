@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Public remote-v1 wire-format contract tests / issue #126. */
+/** Public remote-v1 wire-format contract tests / . */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';

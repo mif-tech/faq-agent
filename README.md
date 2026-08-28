@@ -69,7 +69,40 @@ POST /faq-chat -> handler -> FaqStoragePort -> Settings / FaqQaLogs
                                       validated response envelope
 ```
 
-`ports/` が handler と実装詳細の境界です。公開版の `adapters/production.ts` は export 名を正本と揃えた互換層です。`free` profile では free adapter と3テーブル専用の軽量 DynamoDB client を組み合わせ、`remote` profile では同じ殻の storage とガードを維持したまま RAG 処理を MIF Remote RAG API へ委譲します。
+`ports/` が handler と実装詳細の境界です。公開版の `adapters/production.ts` は export 名を正本と揃えた互換層です。`free` profile では free adapter と4テーブル専用の軽量 DynamoDB client を組み合わせ、`remote` profile では同じ殻の storage とガードを維持したまま RAG 処理を MIF Remote RAG API へ委譲します。
+
+## HTTP マルチエージェント
+
+従来の `POST /faq-chat` は AgentConfig を参照せず、これまでどおり default FAQ として動作します。HTTPマルチエージェントは `FaqPortsProfile=free` 専用です。named agent を公開する場合は、`scripts/agent-config-cli.ts` で `AgentConfig` テーブルへプロファイルを投入し、`POST /agents/{agentId}/faq-chat` を呼び出します。remote-v1契約にはagentスコープがないため、`FaqPortsProfile=remote` のnamed routeは常に404へ閉じます。
+
+⚠️ named agent の実効モデル（プロファイルの `model`、未指定なら `FAQ_FREE_MODEL` / 既定モデル）は許可リスト内である必要があります。**`FAQ_FREE_MODEL` に許可外モデルを設定すると default FAQ は動き続けるのに named agent だけが全件404になる**ので注意してください。named の404はレスポンスでは理由を区別しませんが、サーバログに `{"metric":"faq_named_agent_rejected","reason":...}` が必ず出ます（`invalid_agent_id` / `config_read_error` / `profile_invalid_or_disabled` / `effective_limits_invalid`）。運用ではこのログ文字列へのメトリクスフィルタ設定を推奨します。
+
+```bash
+# デプロイしたstackの出力値を指定する
+export FAQ_TABLE_NAME_PREFIX=dev-lite
+export FAQ_AGENT_CONFIG_TABLE_NAME=dev-lite-AgentConfig
+export FAQ_API_URL=https://example.execute-api.us-west-2.amazonaws.com/dev
+
+# JSONプロファイルを検証してから投入する
+npx tsx scripts/agent-config-cli.ts validate ./agent-profile.json
+npx tsx scripts/agent-config-cli.ts upsert ./agent-profile.json
+
+# 登録済みプロファイルの確認と無効化
+npx tsx scripts/agent-config-cli.ts list
+npx tsx scripts/agent-config-cli.ts disable support
+
+curl -s -X POST "$FAQ_API_URL/agents/support/faq-chat" \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"営業時間を教えてください"}]}'
+```
+
+`agent-profile.json` は、たとえば `{"agentId":"support","enabled":true,"kbAgentId":"support"}` のように `agentId` とboolean型の `enabled` を含めます。AWS region / profile は AWS CLI と同じ標準設定を使います。このCLIはデプロイ済みstackのAgentConfig表を主対象とし、`FAQ_AGENT_CONFIG_TABLE_NAME` にはCloudFormation出力 `FaqAgentConfigTableName` の値を指定します。誤った表への書き込みを防ぐため、`FAQ_TABLE_NAME_PREFIX` も同時に指定し、CLIは `${FAQ_TABLE_NAME_PREFIX}-AgentConfig` との完全一致を要求します。既定のローカル初期化はdefault FAQ用の3表だけを作るため、DynamoDB Localでnamed agentを試す場合はAgentConfig表を別途作成してから、`DYNAMODB_ENDPOINT` に `http://localhost:8000` のような完全な `http(s)` URLを指定してください。非空の不正URLはAWS側へフォールバックせずエラーになります。
+
+`agentId` が許可パターンに一致しない、プロファイルが未登録、`enabled` が `true` ではない、またはプロファイルの値が不正な場合は、すべて `404 {"error":"agent not found"}` になります。default FAQ へはフォールバックしません。
+
+`upsert` は行全体の置換です。AgentConfig の行は HTTP named route と Slack agent で共用のため、既存行にあるフィールドを含まないプロファイルでの `upsert` はエラーになります（Slack 用の `systemPrompt` や `logPolicy` を誤って消さないための保護）。意図的に削除する場合だけ `upsert <profile.json> --replace` を使ってください。
+
+named agent の KB は、プロファイルの `kbAgentId`（省略時は route の `agentId`）と `KnowledgeEntries.agentId` が完全一致する公開・有効な行だけを読み込みます。`agentId` 未設定または `default` の既存行は `POST /faq-chat` 専用で、named agent には混入しません。
 
 ## テストとモック評価
 
@@ -103,8 +136,62 @@ npm run eval:mock
 ```bash
 cd lambda
 sam build
-sam deploy --guided
+sam deploy \
+  --stack-name STACK_NAME \
+  --region REGION \
+  --resolve-s3 \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides FaqChatCorsOrigin=https://YOUR_UI_ORIGIN
 ```
+
+⚠️ `sam deploy --guided` は `NoEcho` パラメータ（`AnthropicApiKey`・`FaqRemoteRagExternalId`・Slack の secret 2値）の入力を、既定値の表示なしで求めます。SAM CLI のバージョンによっては空のまま進められないため、これらを使わない最小デプロイでは上記の非対話コマンド（未指定のパラメータは既定の空になり、QAログ表 `{Environment}-{FaqTableNamespace}-SlackQaLogs` を除く Slack リソースは作成されません）を推奨します。`--guided` を使う場合も「Save arguments to configuration file」で secret を `samconfig.toml` に保存しないでください。
+
+### Slack bot（フリー版）
+
+Slack bot は AWS 上の Events API、FIFO SQS、worker を使う非同期経路です。フリー版は **1 stack = 1 Slack agent** で、DM と許可した channel の `@bot` mention に応答します。
+
+1. Slack の **Create New App** からアプリを作成し、Bot Token Scopes に `chat:write`、`app_mentions:read`、`im:history`、`channels:history` を設定して workspace へインストールします。この時点では Request URL と event subscription は設定しません。Basic Information / OAuth & Permissions から Signing Secret、Bot User OAuth Token、App ID（`A...`）、Team ID（`T...`）、Bot User ID（`U...`）を控えます。scope を変更した場合は workspace へ再インストールしてください。`channels:history` は bot を招待した allowlist channel のスレッド文脈取得にだけ使い、`message.channels` の購読には使いません。private channel 用の `groups:history` はこの手順では付与しません。
+2. 次の7つの SAM parameter をすべて設定して stack をデプロイします。7つをすべて空にすると、QAログ表 `{Environment}-{FaqTableNamespace}-SlackQaLogs`（無効化してもログを保全するため常に作成される空表・コストゼロ）を除き、Slack リソースは作成されません。一部だけを設定した構成は CloudFormation Rule が拒否します。
+
+   | SAM parameter | 内容 |
+   | --- | --- |
+   | `SlackSigningSecret` | Slack App の Signing Secret |
+   | `SlackBotToken` | Bot User OAuth Token |
+   | `SlackApiAppId` | App ID（`A...`） |
+   | `SlackTeamId` | 許可する workspace の Team ID（`T...`） |
+   | `SlackBotUserId` | Bot User ID（`U...`） |
+   | `SlackAgentId` | この stack が固定で処理する agent ID |
+   | `SlackAllowedChannelIds` | 応答を許可する channel ID（`C...`）のカンマ区切り |
+
+   Slack を有効にする場合、`SlackAllowedChannelIds` は最低1件必要です。空は全 channel 許可を意味しません。また Slack worker は AI 生成を行うため、既存の `AnthropicApiKey` も非空で設定してください。`SlackSigningSecret`、`SlackBotToken`、`AnthropicApiKey` は秘密管理されたデプロイ入力から渡し、shell history、CI log、`samconfig.toml` へ平文で残さないでください。
+3. デプロイ後、CloudFormation output `FaqApiUrl` と `SlackIngressEndpointPath` を連結した URL（例: `https://example.execute-api.us-west-2.amazonaws.com/dev/slack/events`）を Slack App の **Event Subscriptions → Request URL** に設定します。`Verified` になったら **Subscribe to bot events** に `app_mention` と `message.im` を追加します。通常の channel 投稿は入口で処理しないため、`message.channels` は購読しません。allowlist 外、Slack Connect 共有 channel、bot 自身の投稿、編集・削除などの subtype event には応答しません。
+4. HTTP named agent と共用する `AgentConfig` 行を CLI で投入します。JSON の `agentId` は `SlackAgentId` と完全に一致させてください。
+
+   ```json
+   {
+     "agentId": "support",
+     "enabled": true,
+     "kbAgentId": "support",
+     "systemPrompt": "自組織のFAQに基づき、簡潔に回答してください。",
+     "model": "claude-haiku-4-5-20251001",
+     "maxOutputTokens": 600,
+     "logPolicy": "metadata_only"
+   }
+   ```
+
+   ```bash
+   # ENVIRONMENT-NAMESPACE は stack の {Environment}-{FaqTableNamespace}、
+   # テーブル名は CloudFormation output FaqAgentConfigTableName の値に置き換える
+   export FAQ_TABLE_NAME_PREFIX=ENVIRONMENT-NAMESPACE
+   export FAQ_AGENT_CONFIG_TABLE_NAME=ENVIRONMENT-NAMESPACE-AgentConfig
+   npx tsx scripts/agent-config-cli.ts validate ./slack-agent-profile.json
+   npx tsx scripts/agent-config-cli.ts upsert ./slack-agent-profile.json
+   ```
+
+   `logPolicy` は `off` / `metadata_only` / `redacted_full` から選びます。省略時は本文を保存しない `metadata_only` です。全文保存を行う `redacted_full` は、保存内容とアクセス権を確認したうえで明示的に指定してください。`KnowledgeEntries` は `kbAgentId`（省略時は `agentId`）が一致する公開・有効な行だけが使われます。
+5. `SlackAllowedChannelIds` に登録した channel へ bot を招待し、DMへの質問と channelでの `@bot 質問` を確認します。
+
+CloudWatch alarm `{Environment}-{FaqTableNamespace}-slack-events-dlq-not-empty` は、worker が同じイベントを5回処理できず、DLQ の可視メッセージ数が1件以上になったとき `ALARM` になります。alarm action は stackで固定しないため、Slackを有効にする前に通知先を設定してください。`ALARM` になった場合は worker のCloudWatch LogsとDLQメッセージを確認し、14日のDLQ保持期限内に原因を調査します。
 
 ### free から remote へ切り替える二段 onboarding
 

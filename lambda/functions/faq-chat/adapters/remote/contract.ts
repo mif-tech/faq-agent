@@ -335,7 +335,7 @@ function publicResponse(value: unknown, field: string): FaqRagPublicResponse {
     if (
       result.answerable !== true ||
       result.sources.length === 0 ||
-      // URL 判定は envelope.ts の containsUrl が正本（二重実装のドリフト防止 / PR#133 レビュー指摘）。
+      // URL 判定は envelope.ts の containsUrl が正本（二重実装のドリフト防止 / レビュー指摘）。
       // この検査は kb_answer のみ: refuse の answer はサーバ所有の固定文面のため検査しない（README 参照）
       containsUrl(result.answer) ||
       hasScopeFallback ||

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Free FAQ Anthropic and grounded-demo generation contract tests / issue #120 run4. */
+/** Free FAQ Anthropic and grounded-demo generation contract tests / . */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -441,7 +441,7 @@ test('grounded demo は先頭refがK1でない不正blockを fail closed にす�
   });
 });
 
-// ---- PR#124 レビュー対応 ----
+// ---- レビュー対応 ----
 
 test('grounded demo は KB 本文の URL を除去して answer を作る（url_in_answer ガードに落ちない）', async () => {
   const content = '営業時間は9時から18時です。詳細は https://example.com/hours?x=1 または www.example.com/hours を参照。';

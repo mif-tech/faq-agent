@@ -76,5 +76,7 @@ export interface FaqRetrievalPort {
   retrieve(input: {
     question: string;
     hints?: FaqRetrievalHints | null;
+    /** 後方互換のdefault FAQ経路では省略する。 */
+    kbAgentId?: string;
   }): Promise<FaqRetrievalResult>;
 }

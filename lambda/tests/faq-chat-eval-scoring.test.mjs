@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * eval採点ロジックの決定的テスト（#37 PR3 / codexレビュー承認条件）。
+ * eval採点ロジックの決定的テスト（レビュー承認条件）。
  * 特に refuse / scope_fallback の4象限を固定する。
  * 実行: cd lambda && npm test
  */

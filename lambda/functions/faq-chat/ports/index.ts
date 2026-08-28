@@ -4,12 +4,12 @@ import type {
   FaqSmalltalkGenerationPort,
 } from './generation.js';
 import type { FaqRetrievalPort } from './retrieval.js';
-import type { FaqStoragePort } from './storage.js';
+import type { FaqAgentConfigPort, FaqStoragePort } from './storage.js';
 
 /**
  * 雑談ガードの決定的語彙（LLM が誤っても効く層）。handler の汎用語彙に**追加**される。
  * テナント/ベンダー固有の製品名（例: 自社製品名・旧ベンダー名）は公開ツリーに出せないため、
- * canonical の production adapter がここから注入し、公開 overlay / free は空にする（PR#125 レビュー指摘）。
+ * canonical の production adapter がここから注入し、公開 overlay / free は空にする（レビュー指摘）。
  * 比較は NFKC 正規化・小文字化した文字列への部分一致。
  */
 export interface FaqGuardVocabulary {
@@ -28,6 +28,8 @@ export interface FaqPorts {
   smalltalkGeneration: FaqSmalltalkGenerationPort;
   answerPrompt: FaqAnswerPromptPolicy;
   storage: FaqStoragePort;
+  /** compositionが有効なプロファイルを明示解決しない限りnamed agentは利用不可。 */
+  agentConfig: FaqAgentConfigPort;
   defaultModel: string;
   /** 省略時は追加語彙なし（handler の汎用語彙のみ） */
   guardVocabulary?: FaqGuardVocabulary;

@@ -1,12 +1,12 @@
 /**
- * 公開FAQチャット Lambda / issue #37 ステップ2
+ * 公開FAQチャット Lambda / ステップ2
  *
  *   POST /faq-chat  （認証なしの公開エンドポイント。営業時間外FAQの一次回答）
  *
  * 会話履歴はブラウザ側（localStorage）が保持し、リクエストで送られてくる（ステートレス・DB不要）。
  * クライアント申告は信用せず、サーバー側で件数・長さ・role を再検証して直近数ターンだけ採用する。
  *
- * ガードレール（#37 設計修正）:
+ * ガードレール:
  * - Settings(faq_chat).enabled が kill switch（既定 false = dark ship。503 を返す）
  * - 現在の質問が承認済み雑談パターンと正規化後に全文一致すれば、
  *   KB検索とモデル呼び出しを行わずサーバー側の固定文を返す
@@ -27,7 +27,7 @@
  * - コスト暴走ガード: API GW route throttle + 入力上限 + Anthropic workspace の spend limit
  *   （人間作業）。予約同時実行（FaqChatReservedConcurrency）は任意（既定未設定 —
  *   アカウントのクォータ引き上げ後に有効化）。Throttles/ConcurrentExecutions の
- *   CloudWatch アラームは issue #49 で追加予定
+ *   CloudWatch アラームは今後追加予定
  */
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -46,7 +46,8 @@ import type {
   FaqGenerationResult,
 } from './ports/generation.js';
 import type { FaqRetrievalHints } from './ports/retrieval.js';
-import { boundPlanTexts } from '../../shared/search-plan-bounds.js';
+import type { FaqAgentProfile, FaqChatSettings } from './ports/storage.js';
+import { boundPlanTexts } from '../../shared/public/search-plan-bounds.js';
 import { REMOTE_V1_GENERATE_BUDGET_FLOOR_MS, REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
 import {
   FAQ_RAG_CONTRACT_VERSION,
@@ -73,6 +74,10 @@ const DEFAULT_MAX_OUTPUT_TOKENS = 600;
 // (2) modelTimeoutMs・Lambda Timeout(28s) の同時見直し を経てから行うこと。
 // 切断率は route=refuse_truncated で監視する
 const MAX_OUTPUT_TOKENS_HARD_CAP = 1_500;
+const AGENT_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const AGENT_PROFILE_SYSTEM_PROMPT_MAX_CHARS = 32_000;
+const AGENT_PROFILE_MODEL_MAX_CHARS = 120;
+const AGENT_PROFILE_FALLBACK_MESSAGE_MAX_CHARS = 4_000;
 // モデル呼び出し後の残処理（JSONパース・出典検証・settleSmalltalkCalls・ログ）のための予約。
 // Lambda Timeout（template.yaml の 28s）を変更する場合はここも併せて見直すこと
 const MODEL_RESPONSE_RESERVE_MS = 2_500;
@@ -93,7 +98,7 @@ const SERVICE_UNAVAILABLE_MESSAGE =
 // 文言マッチは変更時に黙って壊れる fail-open になるため採らない / codexレビュー指摘）
 const TECHNICAL_FALLBACK_MESSAGE =
   '申し訳ありません。一時的に回答を生成できませんでした。お手数ですが、もう一度お試しください。';
-// 範囲内だが資料不足（scope_fallback / #37 PR3）。「情報が存在しない」と断定せず、
+// 範囲内だが資料不足（scope_fallback）。「情報が存在しない」と断定せず、
 // 検索漏れの可能性に誠実な文言にする（codex設計）。モデルには文面を書かせず必ずこれを返す。
 // Settings faq_chat.scopeFallbackMessage でテナント別に上書き可能
 const DEFAULT_SCOPE_FALLBACK_MESSAGE =
@@ -323,7 +328,7 @@ interface SmalltalkTelemetry {
   // （雑談経路のログでは回答段が未実行なので常に false になる / PRレビュー指摘）
   routerStructuredOutputUsed: boolean;
   // ルーター段でスキーマ起因の 400 → スキーマ無し再試行に落ちたか。router_plan_invalid の増加が
-  // 「モデルが構造化出力非対応になった」のか「プランの質」なのかを切り分ける（PR#125 レビュー指摘）
+  // 「モデルが構造化出力非対応になった」のか「プランの質」なのかを切り分ける（レビュー指摘）
   routerStructuredOutputFallback: boolean;
 }
 
@@ -874,7 +879,7 @@ function guardSmalltalkCandidate(
   }
   // ポートから注入されたテナント語彙（businessDomain と同じ扱い）。
   // 注意: ラテン文字は上の latin_character で先に reject されるため、この分岐が意味を持つのは
-  // カタカナ等の非ラテン語彙（例: 製品名の和名）を注入した場合だけ（PR#131 レビュー指摘）
+  // カタカナ等の非ラテン語彙（例: 製品名の和名）を注入した場合だけ（レビュー指摘）
   if (extraBusinessTerms.some((term) => normalizedLower.includes(term))) {
     return { candidate: null, reason: 'forbidden_term_businessDomain' };
   }
@@ -1350,7 +1355,7 @@ const FAQ_QA_LOG_RESPONSE_MARGIN_MS = 800;
 // 注意: マスクの戻り値=保存本文は NFKC 正規化後（利用者の元表記そのままではない）
 
 /**
- * 公開FAQチャットのQ&Aログ（#37 v1）。品質改善（KB追加のネタ・誤答の発見）のため、
+ * 公開FAQチャットのQ&Aログ。品質改善（KB追加のネタ・誤答の発見）のため、
  * 利用者に返した最終応答を質問文と共に保存する。UI側で保存の旨を明示済み。
  * - 利用者の識別子は保存しない（匿名。会話履歴はブラウザ側のみ）
  * - 書き込み失敗は応答を壊さない（warnのみ。ログは品質改善用でありベストエフォート）
@@ -1541,8 +1546,13 @@ async function handleFaqRequest(
   faqPorts: FaqPorts,
   event: APIGatewayProxyEventV2,
   context?: Context,
-  faqRagPort?: FaqRagPort
+  faqRagPort?: FaqRagPort,
+  namedAgentId?: string
 ): Promise<APIGatewayProxyResultV2> {
+  // named経路だけ構造化ログにagent_idを足す（default経路のログ行はフィールド構成ごと不変に保ち、
+  // 既存のメトリクスフィルタ・Logs Insightsクエリを壊さない）。
+  const agentMetricFields =
+    namedAgentId === undefined ? {} : { agent_id: namedAgentId };
   const method = event.requestContext?.http?.method;
   if (method === 'OPTIONS') {
     // 204 No Content はボディ・Content-Type を持たない（CORSヘッダのみ）
@@ -1638,6 +1648,7 @@ async function handleFaqRequest(
       console.log(
         JSON.stringify({
           metric: 'faq_chat',
+          ...agentMetricFields,
           model,
           route: 'chat_template',
           structured_output_used: structuredOutputUsed,
@@ -1725,6 +1736,7 @@ async function handleFaqRequest(
           console.log(
             JSON.stringify({
               metric: 'faq_chat',
+              ...agentMetricFields,
               model: SMALLTALK_HAIKU_MODEL,
               structured_output_used: structuredOutputUsed,
           structured_output_fallback: structuredOutputFallback,
@@ -1764,6 +1776,7 @@ async function handleFaqRequest(
         console.log(
           JSON.stringify({
             metric: 'faq_chat',
+            ...agentMetricFields,
             model: SMALLTALK_HAIKU_MODEL,
             structured_output_used: structuredOutputUsed,
           structured_output_fallback: structuredOutputFallback,
@@ -1819,6 +1832,7 @@ async function handleFaqRequest(
         console.log(
           JSON.stringify({
             metric: 'faq_chat',
+            ...agentMetricFields,
             model: null,
             route,
             response_source: 'remote',
@@ -2026,6 +2040,7 @@ async function handleFaqRequest(
       console.log(
         JSON.stringify({
           metric: 'faq_chat',
+          ...agentMetricFields,
           model,
           route: 'refuse_no_hit',
           structured_output_used: structuredOutputUsed,
@@ -2081,6 +2096,7 @@ async function handleFaqRequest(
       console.log(
         JSON.stringify({
           metric: 'faq_chat',
+          ...agentMetricFields,
           model,
           route: 'refuse_time_budget',
           failure_kind: 'time_budget',
@@ -2174,6 +2190,7 @@ async function handleFaqRequest(
       console.log(
         JSON.stringify({
           metric: 'faq_chat',
+          ...agentMetricFields,
           model,
           route: truncated ? 'refuse_truncated' : nonEndTurn ? 'refuse_stop_other' : 'refuse_model_error',
           failure_kind: failureKind,
@@ -2266,7 +2283,7 @@ async function handleFaqRequest(
     //   （clarify は未発動で拒否・scope_fallback の不正形は技術失敗）
     // - 実在する出典が1件以上（出典ゼロの回答は根拠不明のため公開しない）
     // - 回答本文に URL・リンク構文を含まない（出典は sources で返す設計。混入は fail closed）
-    // scope_fallback（範囲内だが資料不足 / #37 PR3）: モデルは型を選ぶだけで、文面はサーバーが
+    // scope_fallback（範囲内だが資料不足）: モデルは型を選ぶだけで、文面はサーバーが
     // Settings から合成（引用ロンダリング回避 / codex設計）。意味的な非回答であり技術失敗ではない。
     // ガードは迂回しない: 全フィールド空の正常形だけを getFaqGuardDetail が有効（null）と判定し、
     // answer等が入った不正形は scope_fallback_invalid=技術失敗として再試行に回す
@@ -2323,6 +2340,7 @@ async function handleFaqRequest(
     console.log(
       JSON.stringify({
         metric: 'faq_chat',
+        ...agentMetricFields,
         model,
         route,
         structured_output_used: structuredOutputUsed,
@@ -2347,8 +2365,8 @@ async function handleFaqRequest(
         // レスポンスの failureKind と同期（無いと Logs Insights の failure_kind 集計が
         // envelope_invalid 分だけ技術失敗を過小計上する / codexレビュー指摘）
         failure_kind: envelopeInvalid ? 'envelope_invalid' : null,
-        // 封筒v2でモデルが選んだ型。未発動の clarify を自発的に選ぶ頻度は PR4（発動）の
-        // 判断材料になる（route_not_enabled の内訳）。scope_fallback は #37 PR3 で発動済み
+        // 封筒v2でモデルが選んだ型。未発動の clarify を自発的に選ぶ頻度は発動フェーズの
+        // 判断材料になる（route_not_enabled の内訳）。scope_fallback は発動済み
         envelope_response_type: envelope?.responseType ?? null,
         // v1(旧answerable形式の写像)/v2(responseType形式)。v2移行率の観測用
         // （responseType だけでは写像後の値と区別できない / codexレビュー指摘）
@@ -2396,6 +2414,7 @@ async function handleFaqRequest(
     console.log(
       JSON.stringify({
         metric: 'faq_chat',
+        ...agentMetricFields,
         route: 'error',
         structured_output_used: structuredOutputUsed,
           structured_output_fallback: structuredOutputFallback,
@@ -2420,7 +2439,264 @@ async function handleFaqRequest(
   }
 }
 
+const FAQ_AGENT_PROFILE_FIELDS = new Set<string>([
+  'agentId',
+  'enabled',
+  'systemPrompt',
+  'model',
+  'maxOutputTokens',
+  'fallbackMessage',
+  'kbAgentId',
+  'logPolicy',
+]);
+const FAQ_AGENT_LOG_POLICIES = new Set<string>([
+  'off',
+  'metadata_only',
+  'redacted_full',
+]);
+
+function hasOwn(record: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
+function hasValidOptionalString(
+  record: Record<string, unknown>,
+  key: string,
+  maximumChars: number
+): boolean {
+  if (!hasOwn(record, key)) return true;
+  const value = record[key];
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= maximumChars;
+}
+
+/**
+ * Port は実行時境界でもあるため、adapter の型宣言だけを信用しない。
+ * named route は不正なprofileをSettings/defaultへ落とさず、存在しないagentと同じ404へ閉じる。
+ */
+function isValidFaqAgentProfile(
+  value: unknown,
+  expectedAgentId: string
+): value is FaqAgentProfile {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const profile = value as Record<string, unknown>;
+  if (Object.keys(profile).some((field) => !FAQ_AGENT_PROFILE_FIELDS.has(field))) return false;
+  if (!hasOwn(profile, 'agentId') || !hasOwn(profile, 'enabled')) return false;
+  if (profile.agentId !== expectedAgentId || !AGENT_ID_PATTERN.test(expectedAgentId)) return false;
+  if (typeof profile.enabled !== 'boolean') return false;
+  if (
+    !hasValidOptionalString(
+      profile,
+      'systemPrompt',
+      AGENT_PROFILE_SYSTEM_PROMPT_MAX_CHARS
+    ) ||
+    !hasValidOptionalString(profile, 'model', AGENT_PROFILE_MODEL_MAX_CHARS) ||
+    !hasValidOptionalString(
+      profile,
+      'fallbackMessage',
+      AGENT_PROFILE_FALLBACK_MESSAGE_MAX_CHARS
+    )
+  ) {
+    return false;
+  }
+  if (
+    hasOwn(profile, 'model') &&
+    !CLAUDE_STRUCTURED_OUTPUT_MODEL_ALLOWLIST.has(profile.model as string)
+  ) {
+    return false;
+  }
+  if (
+    hasOwn(profile, 'maxOutputTokens') &&
+    (typeof profile.maxOutputTokens !== 'number' ||
+      !Number.isSafeInteger(profile.maxOutputTokens) ||
+      profile.maxOutputTokens < 100 ||
+      profile.maxOutputTokens > MAX_OUTPUT_TOKENS_HARD_CAP)
+  ) {
+    return false;
+  }
+  if (
+    hasOwn(profile, 'kbAgentId') &&
+    (typeof profile.kbAgentId !== 'string' || !AGENT_ID_PATTERN.test(profile.kbAgentId))
+  ) {
+    return false;
+  }
+  if (
+    hasOwn(profile, 'logPolicy') &&
+    (typeof profile.logPolicy !== 'string' ||
+      !FAQ_AGENT_LOG_POLICIES.has(profile.logPolicy))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function applyAgentProfile(
+  setting: FaqChatSettings,
+  profile: FaqAgentProfile
+): FaqChatSettings {
+  return {
+    ...setting,
+    ...(profile.systemPrompt === undefined ? {} : { systemPrompt: profile.systemPrompt }),
+    ...(profile.model === undefined ? {} : { model: profile.model }),
+    ...(profile.maxOutputTokens === undefined
+      ? {}
+      : { maxOutputTokens: profile.maxOutputTokens }),
+    ...(profile.fallbackMessage === undefined
+      ? {}
+      : { fallbackMessage: profile.fallbackMessage }),
+  };
+}
+
+function hasValidNamedEffectiveLimits(
+  setting: FaqChatSettings,
+  defaultModel: string
+): boolean {
+  const model = setting.model || defaultModel;
+  if (
+    typeof model !== 'string' ||
+    !CLAUDE_STRUCTURED_OUTPUT_MODEL_ALLOWLIST.has(model)
+  ) {
+    return false;
+  }
+  const configuredTokens =
+    typeof setting.maxOutputTokens === 'number'
+      ? setting.maxOutputTokens
+      : DEFAULT_MAX_OUTPUT_TOKENS;
+  const effectiveTokens = Math.min(
+    Math.max(100, configuredTokens),
+    MAX_OUTPUT_TOKENS_HARD_CAP
+  );
+  return Number.isSafeInteger(effectiveTokens);
+}
+
+function createNamedAgentPorts(
+  faqPorts: FaqPorts,
+  profile: FaqAgentProfile,
+  setting: FaqChatSettings | null
+): FaqPorts {
+  const kbAgentId = profile.kbAgentId ?? profile.agentId;
+  return {
+    ...faqPorts,
+    retrieval: {
+      retrieve(input) {
+        return faqPorts.retrieval.retrieve({ ...input, kbAgentId });
+      },
+    },
+    storage: {
+      async loadSettings() {
+        return setting === null ? null : { ...setting };
+      },
+      putQaLog(record) {
+        return faqPorts.storage.putQaLog({
+          ...record,
+          route: `agents/${profile.agentId}/${record.route}`,
+        });
+      },
+    },
+  };
+}
+
+/**
+ * 公開レスポンスは存在有無を漏らさない404固定のまま、サーバ側ログだけで原因を切り分ける。
+ * 「未登録agent」「設定ミス」「AWS側障害」を区別するための理由コード付きログ
+ * （CLAUDE.mdのログ文字列メトリクスフィルタ運用と整合 / レビュー指摘）。
+ */
+function warnNamedAgentRejected(
+  agentId: string,
+  reason: string,
+  detail?: Record<string, unknown>
+): void {
+  console.warn(
+    JSON.stringify({
+      metric: 'faq_named_agent_rejected',
+      // パターン不一致の生入力もログするが、探索ノイズ対策で長さだけ制限する
+      agent_id: agentId.slice(0, 64),
+      reason,
+      ...(detail ?? {}),
+    })
+  );
+}
+
+async function handleNamedAgentRequest(
+  faqPorts: FaqPorts,
+  faqRagPort: FaqRagPort | undefined,
+  event: APIGatewayProxyEventV2,
+  context: Context | undefined,
+  agentId: string
+): Promise<APIGatewayProxyResultV2> {
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    warnNamedAgentRejected(agentId, 'invalid_agent_id');
+    return jsonResponse(404, { error: 'agent not found' });
+  }
+
+  let profile: unknown;
+  try {
+    profile = await faqPorts.agentConfig.resolveAgentProfile(agentId);
+  } catch (error) {
+    // 読み取り障害もdefaultへは落とさない。公開レスポンスは存在有無を区別しない。
+    // スロットリング・権限・テーブル未作成をログで切り分けられるよう、ここだけerror詳細を出す
+    console.error(
+      JSON.stringify({
+        metric: 'faq_named_agent_rejected',
+        agent_id: agentId,
+        reason: 'config_read_error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    );
+    return jsonResponse(404, { error: 'agent not found' });
+  }
+  if (!isValidFaqAgentProfile(profile, agentId) || profile.enabled !== true) {
+    warnNamedAgentRejected(agentId, 'profile_invalid_or_disabled');
+    return jsonResponse(404, { error: 'agent not found' });
+  }
+
+  let setting: FaqChatSettings | null;
+  try {
+    setting = await faqPorts.storage.loadSettings();
+  } catch (error) {
+    // 既存coreのエラーレスポンス・メトリクスを維持しつつ、失敗したSettings読込を再試行しない。
+    const failedSettingsPorts: FaqPorts = {
+      ...faqPorts,
+      storage: {
+        ...faqPorts.storage,
+        async loadSettings() {
+          throw error;
+        },
+      },
+    };
+    return handleFaqRequest(failedSettingsPorts, event, context, faqRagPort, profile.agentId);
+  }
+  const effectiveSetting = setting === null ? null : applyAgentProfile(setting, profile);
+  if (
+    effectiveSetting?.enabled === true &&
+    !hasValidNamedEffectiveLimits(effectiveSetting, faqPorts.defaultModel)
+  ) {
+    // FAQ_FREE_MODEL等のdefaultModelがallowlist外だとnamedだけ全滅するため、実効modelを必ず残す
+    warnNamedAgentRejected(agentId, 'effective_limits_invalid', {
+      model: effectiveSetting.model || faqPorts.defaultModel,
+    });
+    return jsonResponse(404, { error: 'agent not found' });
+  }
+
+  return handleFaqRequest(
+    createNamedAgentPorts(faqPorts, profile, effectiveSetting),
+    event,
+    context,
+    faqRagPort,
+    profile.agentId
+  );
+}
+
 export function createFaqHandler(faqPorts: FaqPorts, faqRagPort?: FaqRagPort) {
-  return (event: APIGatewayProxyEventV2, context?: Context) =>
-    handleFaqRequest(faqPorts, event, context, faqRagPort);
+  return (event: APIGatewayProxyEventV2, context?: Context) => {
+    // CORS preflightはデータを返さない。AgentConfigの存在・状態に依存させず、従来coreの204を使う。
+    if (event.requestContext?.http?.method === 'OPTIONS') {
+      return handleFaqRequest(faqPorts, event, context, faqRagPort);
+    }
+    const agentId = event.pathParameters?.agentId;
+    // default routeは従来coreのPromiseをそのまま返す。AgentConfig・Settings・封筒・ログは不変。
+    if (agentId === undefined) {
+      return handleFaqRequest(faqPorts, event, context, faqRagPort);
+    }
+    return handleNamedAgentRequest(faqPorts, faqRagPort, event, context, agentId);
+  };
 }

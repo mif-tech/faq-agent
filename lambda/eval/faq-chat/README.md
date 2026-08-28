@@ -1,4 +1,4 @@
-# FAQチャット回帰評価（#37 / #85）
+# FAQチャット回帰評価
 
 `POST /faq-chat` の品質回帰を測るための評価セットとランナー。プロンプト（回答契約・検索プラン）や検索ロジックを変更したら、マージ前にここを回して過剰回答・取りこぼしの回帰がないことを確認する。
 
@@ -35,7 +35,7 @@
 | `partial` | 同上が望ましい | 完全には答えられないが部分回答が可能な質問（拒否は機会損失。ただし不正確な断定より安全） |
 | `clarify` | 有効応答ならどちらでも合格 | 聞き返し/解釈併記が理想の曖昧な質問 |
 | `refuse` | 素の `refuse` 必須（`scope_fallback` は不合格） | 答えてはいけない質問（対象範囲外・リアルタイム在庫照会・画像確認など）。`kb_answer` は過剰回答の疑い → 要目視 |
-| `scope_fallback` | `refuse` + `scopeFallback: true` 必須 | 範囲内だが資料不足＝案内型非回答が正解の質問（#37 PR3）。安全性ゲート（exit 1）は `refuse` ラベルのみ |
+| `scope_fallback` | `refuse` + `scopeFallback: true` 必須 | 範囲内だが資料不足＝案内型非回答が正解の質問。安全性ゲート（exit 1）は `refuse` ラベルのみ |
 
 HTTP失敗・非JSON・未知の `responseType`・`kb_answer` なのに本文空、は**無効試行**として限定リトライ（試行ごと最大3回・429は `Retry-After` 尊重・タイムアウト60秒）し、それでも無効なら**どのラベルの合格にも数えない**。有効試行が予定数の過半数に満たない質問は「評価不能」となり終了コード2で落ちる（通信障害を「拒否成功」と誤認しないため）。
 
@@ -49,7 +49,7 @@ HTTP失敗・非JSON・未知の `responseType`・`kb_answer` なのに本文空
 
 以下の例はリポジトリルートから `cd lambda` した状態で実行する。
 
-### 公開 eval の production / remote parity gate（#126）
+### 公開 eval の production / remote parity gate
 
 公開セット10件 + 2 episodes は、同じ合成KBを用意した **eval-public 専用構成**で実行する。remote 構成では runner の引数で tenant を渡すのではなく、FAQ shell に設定した eval-public 用 IAM role / ExternalId と MIF 側の role-to-tenant map によって `eval-public` が選択される。production 構成側にも同じ公開合成コーパスを用意すること。**eval-public 以外の実顧客KBは公開 `sample-*` fixture と内容が一致しないため、この parity eval の実行先にしない。**
 
@@ -185,5 +185,5 @@ answer/partial の増減は自動ゲートにせず、数値とベースライ�
 
 ## 既知の限界
 
-- 固定45問への過適合リスクがある（この45問に合わせてプロンプトを調整し続けると汎化しない）。盲検セットの追加は #85 参照
+- 固定45問への過適合リスクがある（この45問に合わせてプロンプトを調整し続けると汎化しない）。盲検セットの追加は今後の課題
 - 検索側（注入エントリ）の検証はしていない。`expected_entries` は参考情報で、採点には使っていない

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * faq-chat 封筒契約の決定的単体テスト（#37 PR2 / codexレビュー承認条件）
+ * faq-chat 封筒契約の決定的単体テスト（レビュー承認条件）
  *
  * envelope.ts（純粋モジュール）を esbuild でその場コンパイルして node:test で検証する。
  * ネットワーク・AWS・環境変数に依存しない。
@@ -102,7 +102,7 @@ const GUARD_CASES = [
   ['refuse → model_answerable_false（メトリクス名の継続）', env({ responseType: 'refuse', answer: '' }), 0, 'model_answerable_false'],
   ['refuse はクロスフィールド違反でも意味的拒否のまま', env({ responseType: 'refuse', answer: '残った本文' }), 1, 'model_answerable_false'],
   ['clarify → route_not_enabled（発動まで拒否）', env({ responseType: 'clarify' }), 1, 'route_not_enabled'],
-  // scope_fallback（#37 PR3で発動済み）: 全フィールド空の正常形だけ有効（null）。
+  // scope_fallback（発動済み）: 全フィールド空の正常形だけ有効（null）。
   // answer等が非空なら「答えられる内容があるのに型だけfallback」＝技術失敗で再試行に回す
   ['scope_fallback 正常形（全フィールド空）→ null',
     env({ responseType: 'scope_fallback', answer: '', sourceRefs: [], clarifyingQuestion: '' }), 0, null],
@@ -127,7 +127,7 @@ for (const [name, envelope, validSourceCount, expected] of GUARD_CASES) {
 }
 
 // ---- スキーマ契約 ----
-test('スキーマのenumは発動済みの型のみ（answer/refuse/scope_fallback。clarifyはPR4まで未発動）', () => {
+test('スキーマのenumは発動済みの型のみ（answer/refuse/scope_fallback。clarifyは将来フェーズまで未発動）', () => {
   assert.deepEqual(FAQ_ENVELOPE_JSON_SCHEMA.properties.responseType.enum, ['answer', 'refuse', 'scope_fallback']);
   assert.deepEqual([...MODEL_ENVELOPE_RESPONSE_TYPES], ['answer', 'refuse', 'scope_fallback']);
 });
@@ -143,7 +143,7 @@ test('containsUrl', () => {
   assert.equal(containsUrl('URLなし本文'), false);
 });
 
-// ---- maskContactPii: Q&Aログ保存前の接触先PIIマスク（#37 v1）----
+// ---- maskContactPii: Q&Aログ保存前の接触先PIIマスク（v1）----
 // 180日保持されるPIIの唯一の防波堤。期待値は**出力文字列の完全一致**で固定する
 // （PRレビュー指摘: 「変わったか+トークン有無」のboolean判定は '[電話番号]8' のような
 // 部分マスク=桁残りをPASSさせる。実際に+81 {8,9}で起きた失敗モード）。

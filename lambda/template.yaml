@@ -33,7 +33,7 @@ Parameters:
     ConstraintDescription: >-
       Must contain only lowercase letters, digits, and hyphens, and must start
       and end with a letter or digit
-    Description: Stable namespace that isolates the three FAQ DynamoDB tables
+    Description: Stable namespace that isolates the four FAQ DynamoDB tables
 
   DynamoDBEndpoint:
     Type: String
@@ -85,6 +85,48 @@ Parameters:
     NoEcho: true
     Description: Optional API key; empty uses the deterministic grounded demo generator
 
+  SlackSigningSecret:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Slack app signing secret; leave all Slack parameters empty to disable Slack
+
+  SlackBotToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Slack Bot User OAuth Token for the free Slack agent
+
+  SlackApiAppId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Z0-9]+$'
+    Description: Expected api_app_id for the Slack app
+
+  SlackTeamId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Z0-9]+$'
+    Description: Expected team_id for the Slack workspace
+
+  SlackBotUserId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Z0-9]+$'
+    Description: Expected bot user ID used for loop prevention
+
+  SlackAgentId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[a-z0-9][a-z0-9_-]{0,63}$'
+    Description: AgentConfig agentId fixed by this stack's Slack credential
+
+  SlackAllowedChannelIds:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^[A-Z0-9]+(,[A-Z0-9]+)*$'
+    Description: Comma-separated channel allowlist; at least one ID is required when Slack is enabled
+
   FaqChatCorsOrigin:
     Type: String
     Default: '*'
@@ -128,14 +170,49 @@ Rules:
           FaqRemoteRag* settings require FaqPortsProfile=remote so the shell does not silently
           serve free lexical results while remote is configured
 
+  SlackConfigurationMustBeComplete:
+    RuleCondition: !Or
+      - !Not [!Equals [!Ref SlackSigningSecret, '']]
+      - !Not [!Equals [!Ref SlackBotToken, '']]
+      - !Not [!Equals [!Ref SlackApiAppId, '']]
+      - !Not [!Equals [!Ref SlackTeamId, '']]
+      - !Not [!Equals [!Ref SlackBotUserId, '']]
+      - !Not [!Equals [!Ref SlackAgentId, '']]
+      - !Not [!Equals [!Ref SlackAllowedChannelIds, '']]
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SlackSigningSecret, '']]
+        AssertDescription: SlackSigningSecret is required when any Slack parameter is set
+      - Assert: !Not [!Equals [!Ref SlackBotToken, '']]
+        AssertDescription: SlackBotToken is required when Slack is enabled
+      - Assert: !Not [!Equals [!Ref SlackApiAppId, '']]
+        AssertDescription: SlackApiAppId is required when Slack is enabled
+      - Assert: !Not [!Equals [!Ref SlackTeamId, '']]
+        AssertDescription: SlackTeamId is required when Slack is enabled
+      - Assert: !Not [!Equals [!Ref SlackBotUserId, '']]
+        AssertDescription: SlackBotUserId is required when Slack is enabled
+      - Assert: !Not [!Equals [!Ref SlackAgentId, '']]
+        AssertDescription: SlackAgentId is required when Slack is enabled
+      - Assert: !Not [!Equals [!Ref SlackAllowedChannelIds, '']]
+        AssertDescription: SlackAllowedChannelIds must list at least one channel when Slack is enabled
+      - Assert: !Not [!Equals [!Ref AnthropicApiKey, '']]
+        AssertDescription: AnthropicApiKey is required when Slack is enabled
+
 Conditions:
   UseFaqRemoteRagAssumeRole: !And
     - !Equals [!Ref FaqPortsProfile, remote]
     - !Not [!Equals [!Ref FaqRemoteRagRoleArn, '']]
+  HasSlackAgent: !Not [!Equals [!Ref SlackSigningSecret, '']]
 
 Resources:
   FaqHttpApi:
     Type: AWS::Serverless::HttpApi
+    Metadata:
+      # SAM guards a conditional function's generated route with the same condition.
+      # cfn-lint W1028 treats that required false branch as unreachable after transform.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W1028
     Properties:
       StageName: !Ref Environment
       CorsConfiguration:
@@ -150,6 +227,16 @@ Resources:
         'POST /faq-chat':
           ThrottlingBurstLimit: 5
           ThrottlingRateLimit: 2
+        'POST /agents/{agentId}/faq-chat':
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
+        # Slack無効時はrouteが生成されないため、stage設定も残さない（存在しないrouteへの
+        # RouteSettingsを避ける / レビュー指摘）。
+        'POST /slack/events': !If
+          - HasSlackAgent
+          - ThrottlingBurstLimit: 5
+            ThrottlingRateLimit: 2
+          - !Ref AWS::NoValue
 
   SettingsTable:
     Type: AWS::DynamoDB::Table
@@ -163,6 +250,20 @@ Resources:
           AttributeType: S
       KeySchema:
         - AttributeName: key
+          KeyType: HASH
+
+  AgentConfigTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub ${Environment}-${FaqTableNamespace}-AgentConfig
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: agentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: agentId
           KeyType: HASH
 
   KnowledgeEntriesTable:
@@ -252,6 +353,7 @@ Resources:
           FAQ_CORS_ORIGIN: !Ref FaqChatCorsOrigin
           FAQ_TABLE_NAME_PREFIX: !Sub ${Environment}-${FaqTableNamespace}
           FAQ_SETTINGS_TABLE_NAME: !Ref SettingsTable
+          FAQ_AGENT_CONFIG_TABLE_NAME: !Ref AgentConfigTable
           FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: !Ref KnowledgeEntriesTable
           FAQ_QA_LOGS_TABLE_NAME: !Ref FaqQaLogsTable
       Events:
@@ -267,6 +369,18 @@ Resources:
             ApiId: !Ref FaqHttpApi
             Path: /faq-chat
             Method: OPTIONS
+        FaqAgentChatApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /agents/{agentId}/faq-chat
+            Method: POST
+        FaqAgentChatOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /agents/{agentId}/faq-chat
+            Method: OPTIONS
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -277,7 +391,9 @@ Resources:
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
-              Resource: !GetAtt SettingsTable.Arn
+              Resource:
+                - !GetAtt SettingsTable.Arn
+                - !GetAtt AgentConfigTable.Arn
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -301,6 +417,234 @@ Resources:
         External:
           - '@aws-sdk/*'
 
+  SlackEventDLQ:
+    Type: AWS::SQS::Queue
+    Condition: HasSlackAgent
+    Properties:
+      QueueName: !Sub ${Environment}-${FaqTableNamespace}-slack-events-dlq.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600
+
+  SlackEventQueue:
+    Type: AWS::SQS::Queue
+    Condition: HasSlackAgent
+    Properties:
+      QueueName: !Sub ${Environment}-${FaqTableNamespace}-slack-events.fifo
+      FifoQueue: true
+      SqsManagedSseEnabled: true
+      VisibilityTimeout: 360
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt SlackEventDLQ.Arn
+        maxReceiveCount: 5
+
+  SlackEventIdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    Condition: HasSlackAgent
+    Properties:
+      TableName: !Sub ${Environment}-${FaqTableNamespace}-SlackEventIdempotency
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: idempotencyKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: idempotencyKey
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  SlackQaLogsTable:
+    Type: AWS::DynamoDB::Table
+    # データ表のみ無条件で作る（他のSlackリソースはHasSlackAgent条件付き）。
+    # 条件付き+Retainの組合せだと、Slack無効化で物理表だけが残り、再有効化時に
+    # 同名表のCREATE衝突でスタック更新が失敗する（停止→再開が片道になる）。
+    # 空表のコストはPAY_PER_REQUESTでゼロのため、常設+Retainで保全と再開性を両立する。
+    DeletionPolicy: RetainExceptOnCreate
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub ${Environment}-${FaqTableNamespace}-SlackQaLogs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: sourceEventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sourceEventId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  SlackEventDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasSlackAgent
+    Properties:
+      AlarmName: !Sub ${Environment}-${FaqTableNamespace}-slack-events-dlq-not-empty
+      AlarmDescription: Free Slack agent event DLQ has messages and requires review
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SlackEventDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  SlackIngressRole:
+    Type: AWS::IAM::Role
+    Condition: HasSlackAgent
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: SendSlackEvent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt SlackEventQueue.Arn
+
+  SlackWorkerRole:
+    Type: AWS::IAM::Role
+    Condition: HasSlackAgent
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RunSlackAgent
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                Resource: !GetAtt AgentConfigTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:Scan
+                Resource: !GetAtt KnowledgeEntriesTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt SlackEventIdempotencyTable.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt SlackQaLogsTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt SlackEventQueue.Arn
+
+  SlackIngressFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasSlackAgent
+    Properties:
+      FunctionName: !Sub ${Environment}-${FaqTableNamespace}-slack-ingress
+      CodeUri: functions/slack-ingress/
+      Handler: handler.handler
+      Role: !GetAtt SlackIngressRole.Arn
+      Timeout: 4
+      MemorySize: 256
+      Description: Signed Slack Events ingress for the free Slack agent
+      Environment:
+        Variables:
+          AGENT_ID: !Ref SlackAgentId
+          TRUST_CLASS: 'slack'
+          SLACK_SIGNING_SECRET: !Ref SlackSigningSecret
+          EXPECTED_API_APP_ID: !Ref SlackApiAppId
+          EXPECTED_TEAM_ID: !Ref SlackTeamId
+          EXPECTED_BOT_USER_ID: !Ref SlackBotUserId
+          ALLOWED_CHANNEL_IDS: !Ref SlackAllowedChannelIds
+          SLACK_EVENT_QUEUE_URL: !Ref SlackEventQueue
+      Events:
+        SlackEventsApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /slack/events
+            Method: POST
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - handler.ts
+        External:
+          - '@aws-sdk/*'
+
+  SlackWorkerFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasSlackAgent
+    Properties:
+      FunctionName: !Sub ${Environment}-${FaqTableNamespace}-slack-agent-worker
+      CodeUri: functions/slack-agent-worker/
+      Handler: handler.handler
+      Role: !GetAtt SlackWorkerRole.Arn
+      Timeout: 60
+      MemorySize: 512
+      Description: FIFO worker for the free Slack agent
+      Environment:
+        Variables:
+          AGENT_ID: !Ref SlackAgentId
+          TRUST_CLASS: 'slack'
+          KB_TABLE_NAME: !Ref KnowledgeEntriesTable
+          SLACK_QA_LOG_TABLE_NAME: !Ref SlackQaLogsTable
+          SLACK_BOT_TOKEN: !Ref SlackBotToken
+          EXPECTED_BOT_USER_ID: !Ref SlackBotUserId
+          IDEMPOTENCY_TABLE_NAME: !Ref SlackEventIdempotencyTable
+          QUEUE_MAX_RECEIVE_COUNT: '5'
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          FAQ_TABLE_NAME_PREFIX: !Sub ${Environment}-${FaqTableNamespace}
+          FAQ_SETTINGS_TABLE_NAME: !Ref SettingsTable
+          FAQ_AGENT_CONFIG_TABLE_NAME: !Ref AgentConfigTable
+          FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: !Ref KnowledgeEntriesTable
+          FAQ_QA_LOGS_TABLE_NAME: !Ref FaqQaLogsTable
+      Events:
+        SlackEventQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt SlackEventQueue.Arn
+            BatchSize: 1
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - handler.ts
+        External:
+          - '@aws-sdk/*'
+
 Outputs:
   FaqApiUrl:
     Description: FAQ API base URL
@@ -311,9 +655,28 @@ Outputs:
   FaqSettingsTableName:
     Description: Exact DynamoDB table name for FAQ settings
     Value: !Ref SettingsTable
+  FaqAgentConfigTableName:
+    Description: Exact DynamoDB table name for named FAQ agent profiles
+    Value: !Ref AgentConfigTable
   FaqKnowledgeEntriesTableName:
     Description: Exact DynamoDB table name for public FAQ knowledge entries
     Value: !Ref KnowledgeEntriesTable
   FaqQaLogsTableName:
     Description: Exact DynamoDB table name for FAQ question and answer logs
     Value: !Ref FaqQaLogsTable
+  SlackEventQueueUrl:
+    Condition: HasSlackAgent
+    Description: FIFO queue URL for verified Slack events
+    Value: !Ref SlackEventQueue
+  SlackEventIdempotencyTableName:
+    Condition: HasSlackAgent
+    Description: Exact DynamoDB table name for Slack event idempotency records
+    Value: !Ref SlackEventIdempotencyTable
+  SlackQaLogsTableName:
+    # 表が常設のため出力も無条件（Slack無効時もログ表の所在を確認できる）。
+    Description: Exact DynamoDB table name for Slack question and answer logs
+    Value: !Ref SlackQaLogsTable
+  SlackIngressEndpointPath:
+    Condition: HasSlackAgent
+    Description: HTTP API path to configure as the Slack Events Request URL
+    Value: /slack/events

@@ -149,7 +149,7 @@ test('mock mode rejects --api before writing an output file', () => {
   assert.equal(fs.existsSync(outFile), false);
 });
 
-// ---- PR#123 レビュー対応: baseline の mode 不一致 / 録画と fixture の照合 / turn 単位の再生 ----
+// ---- レビュー対応: baseline の mode 不一致 / 録画と fixture の照合 / turn 単位の再生 ----
 
 test('--baseline は mode 不一致（mock ベースライン vs recorded 実行）で exit 2', () => {
   const mockOut = path.join(tempDir, 'baseline-mock.json');
@@ -212,7 +212,7 @@ test('recorded は (id, trial, turn) で再生し、欠落ターンはリトラ�
   assert.ok(elapsed < 60_000, `offline replay should not pace: ${elapsed}ms`);
 });
 
-// ---- PR#129 レビュー対応 ----
+// ---- レビュー対応 ----
 
 test('recorded の出力は録画元 mode を recordingMode として持ち、--record は非空ファイルを拒否する', () => {
   const outFile = path.join(tempDir, 'recording-mode.json');
@@ -232,7 +232,7 @@ test('recorded の出力は録画元 mode を recordingMode として持ち、--
 });
 
 test('mock transport は Lambda context（時間予算 30s）を handler に渡す', () => {
-  // 引数名の衝突で {id, trial} が context として渡ると model_timeout_ms が null になる（PR#129 レビュー指摘）
+  // 引数名の衝突で {id, trial} が context として渡ると model_timeout_ms が null になる（レビュー指摘）
   const outFile = path.join(tempDir, 'mock-context.json');
   const result = runEval(['--mode', 'mock', '--runs', '1', '--ids', 'sample-q-001-hours', '--out', outFile]);
   assert.equal(result.status, 0, diagnostics(result));

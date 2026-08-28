@@ -10,7 +10,7 @@
     "build": "sam build",
     "local:api": "sam local start-api --config-env local",
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/faq-chat-envelope.test.mjs tests/faq-chat-eval-parity.test.mjs tests/faq-chat-eval-runner.test.mjs tests/faq-chat-eval-scoring.test.mjs tests/faq-chat-free-generation.test.mjs tests/faq-chat-free-retrieval.test.mjs tests/faq-chat-handler.test.mjs tests/faq-chat-iam-boundary.test.mjs tests/faq-chat-lite-adapters.test.mjs tests/faq-chat-lite-remote-template.test.mjs tests/faq-chat-remote-http-client.test.mjs tests/faq-chat-remote-wire.test.mjs tests/faq-chat-stub-adapter.test.mjs tests/faq-local-scripts.test.mjs tests/search-plan-bounds.test.mjs",
+    "test": "node --test \"tests/*.test.mjs\"",
     "eval:mock": "node eval/faq-chat/run-eval.mjs --mode mock --runs 1"
   },
   "dependencies": {

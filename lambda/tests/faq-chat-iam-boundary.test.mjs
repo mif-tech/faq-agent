@@ -101,7 +101,9 @@ for (const contract of contracts) {
     assert.deepEqual(actions(code), expectedActions);
     assert.doesNotMatch(code, /\b(?:DeleteItem|UpdateItem|BatchWriteItem)\b/u);
     assert.doesNotMatch(code, /\*/u);
-    assert.doesNotMatch(code, /\bAgentConfig(?:Table)?\b/u);
+    if (contract.kind === 'canonical') {
+      assert.doesNotMatch(code, /\bAgentConfig(?:Table)?\b/u);
+    }
 
     for (const [action, suffix, logicalId] of dataContracts) {
       const statement = statementForAction(code, action);
@@ -116,7 +118,14 @@ for (const contract of contracts) {
         );
         assert.doesNotMatch(statement, /!GetAtt\s+[A-Za-z][A-Za-z0-9]*Table\.Arn/u);
       } else {
-        assert.match(statement, new RegExp(`Resource: !GetAtt ${logicalId}\\.Arn`, 'u'));
+        if (action === 'dynamodb:GetItem') {
+          assert.match(
+            statement,
+            /Resource:\s*\n\s+- !GetAtt SettingsTable\.Arn\s*\n\s+- !GetAtt AgentConfigTable\.Arn/u
+          );
+        } else {
+          assert.match(statement, new RegExp(`Resource: !GetAtt ${logicalId}\\.Arn`, 'u'));
+        }
         assert.doesNotMatch(statement, /table\/\$\{Environment\}-/u);
       }
     }
