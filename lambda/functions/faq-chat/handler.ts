@@ -46,7 +46,11 @@ import type {
   FaqGenerationResult,
 } from './ports/generation.js';
 import type { FaqRetrievalHints } from './ports/retrieval.js';
-import type { FaqAgentProfile, FaqChatSettings } from './ports/storage.js';
+import type {
+  FaqAgentProfile,
+  FaqChatSettings,
+  FaqQaLogRecord,
+} from './ports/storage.js';
 import { boundPlanTexts } from '../../shared/public/search-plan-bounds.js';
 import { REMOTE_V1_GENERATE_BUDGET_FLOOR_MS, REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
 import {
@@ -1340,13 +1344,39 @@ function sanitizeMessages(
 
 // containsUrl / FaqGuardDetail / getFaqGuardDetail は envelope.ts に分離
 
-// Q&Aログの保存期間（Messagesと同じ180日。TTL削除後のS3アーカイブはv2=Streams配線で対応）
-const FAQ_QA_LOG_TTL_DAYS = 180;
+// Q&Aログの保存期間。公開 lite stack は SAM parameter から注入し、正本の既存構成は
+// 未設定時の180日を維持する。0は新規レコードへのttl付与を止める明示的なopt-out。
+const DEFAULT_FAQ_QA_LOG_RETENTION_DAYS = 180;
+const MAX_FAQ_QA_LOG_RETENTION_DAYS = 3_650;
+
+function readFaqQaLogRetentionDays(): number {
+  const raw = process.env.FAQ_QA_LOG_RETENTION_DAYS?.trim();
+  if (!raw) return DEFAULT_FAQ_QA_LOG_RETENTION_DAYS;
+
+  // JavaScript's Number conversion accepts formats such as hexadecimal and
+  // exponent notation. Keep the runtime contract narrower and auditable:
+  // decimal digits only, bounded to the public template's ten-year maximum.
+  if (/^\d+$/u.test(raw)) {
+    const parsed = Number(raw);
+    if (Number.isSafeInteger(parsed) && parsed <= MAX_FAQ_QA_LOG_RETENTION_DAYS) {
+      return parsed;
+    }
+  }
+
+  // 設定値そのものはログへ出さない。module初期化時に一度だけ評価するため、cold startごとに
+  // 固定warnが最大1件となり、invocationごとのログ洪水を避ける。
+  console.warn(
+    `[faq-chat] invalid FAQ_QA_LOG_RETENTION_DAYS; using default ${DEFAULT_FAQ_QA_LOG_RETENTION_DAYS} days`
+  );
+  return DEFAULT_FAQ_QA_LOG_RETENTION_DAYS;
+}
+
+const FAQ_QA_LOG_RETENTION_DAYS = readFaqQaLogRetentionDays();
 const FAQ_QA_LOG_QUESTION_MAX = 1_000;
 const FAQ_QA_LOG_ANSWER_MAX = 4_000;
-// ログ書込は応答直前の付随処理。この上限か「Lambda残余時間-800ms」の小さい方まで待ち、
-// 書けなければ応答を優先して打ち切る（PRレビュー指摘: 固定2秒待ちは MODEL_RESPONSE_RESERVE_MS
-// の予約枠を食い潰し、特に refuse_time_budget 経路で 200 予定の応答が 502 になり得る）
+// Q&A付随処理はPutを優先し、成功した場合だけ同じ総期限の残りを通知へ渡す。この上限か
+// 「Lambda残余時間-800ms」の小さい方まで待つ（PRレビュー指摘: 各処理で固定2秒ずつ待つと
+// MODEL_RESPONSE_RESERVE_MSの予約枠を食い潰し、特にrefuse_time_budget経路で502になり得る）
 const FAQ_QA_LOG_WRITE_TIMEOUT_MS = 2_000;
 const FAQ_QA_LOG_RESPONSE_MARGIN_MS = 800;
 
@@ -1361,7 +1391,7 @@ const FAQ_QA_LOG_RESPONSE_MARGIN_MS = 800;
  * - 書き込み失敗は応答を壊さない（warnのみ。ログは品質改善用でありベストエフォート）
  * - 公開関数の書込IAMはこのテーブルのPutItemのみ（読み取りは一切付与しない）
  */
-async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry: {
+interface FaqQaLogEntry {
   question: string;
   answer: string;
   responseType: string;
@@ -1372,7 +1402,34 @@ async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry:
   sources?: string[];
   model?: string | null;
   totalMs?: number;
-}): Promise<void> {
+}
+
+function scopedFaqQaRoute(route: string, namedAgentId?: string): string {
+  return namedAgentId === undefined ? route : `agents/${namedAgentId}/${route}`;
+}
+
+function remainingTimeLabel(remainingMs: number | undefined): string {
+  return typeof remainingMs === 'number' ? `${remainingMs}ms` : 'n/a';
+}
+
+function qaLogWarningContext(
+  route: string,
+  remainingMs: number | undefined,
+  namedAgentId?: string
+): string {
+  return (
+    `remaining=${remainingTimeLabel(remainingMs)}, ` +
+    `route=${scopedFaqQaRoute(route, namedAgentId)}` +
+    (namedAgentId === undefined ? '' : `, agentId=${namedAgentId}`)
+  );
+}
+
+async function logFaqQa(
+  faqPorts: FaqPorts,
+  context: Context | undefined,
+  entry: FaqQaLogEntry,
+  namedAgentId?: string
+): Promise<void> {
   // 待ち上限は「呼び出し時点の残余時間 - 応答マージン」でクランプする（PRレビュー指摘:
   // 固定2秒は MODEL_RESPONSE_RESERVE_MS(2.5s) の予約枠の80%を単独で食い、refuse_time_budget
   // 経路=残余最小の分岐で Lambda Timeout 超過→502 になり得る）。足りなければ書込ごとスキップ
@@ -1384,15 +1441,21 @@ async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry:
   );
   if (budgetMs <= 0) {
     console.warn(
-      `[faq-chat] qa log write skipped (remaining=${remainingMs}ms, route=${entry.route})`
+      `[faq-chat] qa log write skipped (${qaLogWarningContext(
+        entry.route,
+        remainingMs,
+        namedAgentId
+      )})`
     );
     return;
   }
+  const sideEffectDeadlineAt = Date.now() + budgetMs;
+  let record: FaqQaLogRecord;
   let timer: NodeJS.Timeout | undefined;
   try {
     const now = new Date();
     const iso = now.toISOString();
-    const write = faqPorts.storage.putQaLog({
+    record = {
       dateBucket: iso.slice(0, 10),
       // 同一ミリ秒の衝突は UUID サフィックス + 存在チェック条件で既存行を上書きしない
       // （codexレビュー指摘: 乱数6桁+無条件Putは理論上衝突時に黙って上書きする）
@@ -1407,30 +1470,86 @@ async function logFaqQa(faqPorts: FaqPorts, context: Context | undefined, entry:
       sources: (entry.sources ?? []).slice(0, 8).map((s) => s.slice(0, 200)),
       model: entry.model ?? null,
       totalMs: entry.totalMs ?? null,
-      ttl: Math.floor(now.getTime() / 1000) + FAQ_QA_LOG_TTL_DAYS * 24 * 3600,
-    });
+      ...(FAQ_QA_LOG_RETENTION_DAYS === 0
+        ? {}
+        : {
+            ttl:
+              Math.floor(now.getTime() / 1000) +
+              FAQ_QA_LOG_RETENTION_DAYS * 24 * 3600,
+          }),
+    };
+    const writeBudgetMs = Math.max(0, sideEffectDeadlineAt - Date.now());
+    if (writeBudgetMs <= 0) {
+      console.warn(
+        `[faq-chat] qa log write skipped (${qaLogWarningContext(
+          entry.route,
+          remainingMs,
+          namedAgentId
+        )})`
+      );
+      return;
+    }
+    const write = faqPorts.storage.putQaLog(record);
     // 応答直前の唯一の書込のため、DynamoDBの遅延・SDKリトライで利用者応答を道連れにしない
     // （codexレビュー指摘: 無期限awaitはLambda期限と競合し、200予定の応答が5xxになり得る）。
     // 時間切れ時はwarnして応答を優先する（未完のPutは次invocationか凍結解除後に完了/失敗する）
-    await Promise.race([
-      write,
+    const writeResult = await Promise.race([
+      write.then(() => 'written' as const),
       new Promise<'timeout'>((resolve) => {
-        timer = setTimeout(() => resolve('timeout'), budgetMs);
+        timer = setTimeout(() => resolve('timeout'), writeBudgetMs);
       }),
-    ]).then((r) => {
-      if (r === 'timeout') {
-        write.catch(() => {});
-        console.warn(
-          `[faq-chat] qa log write timed out (>${budgetMs}ms), responding without waiting`
-        );
-      }
-    });
+    ]);
+    if (writeResult === 'timeout') {
+      write.catch(() => {});
+      console.warn(
+        `[faq-chat] qa log write timed out (>${writeBudgetMs}ms, ${qaLogWarningContext(
+          entry.route,
+          remainingMs,
+          namedAgentId
+        )}), responding without waiting`
+      );
+      return;
+    }
   } catch (e) {
-    console.warn(`[faq-chat] qa log write failed: ${(e as Error)?.message ?? e}`);
+    console.warn(
+      `[faq-chat] qa log write failed: ${(e as Error)?.message ?? e} (${qaLogWarningContext(
+        entry.route,
+        remainingMs,
+        namedAgentId
+      )})`
+    );
+    return;
   } finally {
     // 書込が先に完了してもタイマーを残さない（凍結→次invocationでの無関係な発火と
     // イベントループ残留による課金水増しを防ぐ / PRレビュー指摘）
     if (timer !== undefined) clearTimeout(timer);
+  }
+
+  const notifyQaLog = faqPorts.storage.notifyQaLog;
+  if (notifyQaLog === undefined) return;
+
+  const notifyRemainingMs = context?.getRemainingTimeInMillis?.();
+  const notifyBudgetMs = Math.floor(
+    Math.min(
+      sideEffectDeadlineAt - Date.now(),
+      typeof notifyRemainingMs === 'number'
+        ? notifyRemainingMs - FAQ_QA_LOG_RESPONSE_MARGIN_MS
+        : Number.POSITIVE_INFINITY
+    )
+  );
+  if (notifyBudgetMs <= 0) {
+    console.warn(
+      `[faq-chat] Q&A Slack notification skipped (budget=${notifyBudgetMs}ms, ` +
+        `${qaLogWarningContext(record.route, notifyRemainingMs, namedAgentId)})`
+    );
+    return;
+  }
+
+  try {
+    await notifyQaLog.call(faqPorts.storage, record, notifyBudgetMs);
+  } catch {
+    // Notification errors can contain the secret webhook URL or Q&A text. Keep this stable.
+    console.warn('[faq-chat] Q&A Slack notification failed');
   }
 }
 
@@ -1553,6 +1672,8 @@ async function handleFaqRequest(
   // 既存のメトリクスフィルタ・Logs Insightsクエリを壊さない）。
   const agentMetricFields =
     namedAgentId === undefined ? {} : { agent_id: namedAgentId };
+  const logFaqQaForRequest = (entry: FaqQaLogEntry) =>
+    logFaqQa(faqPorts, context, entry, namedAgentId);
   const method = event.requestContext?.http?.method;
   if (method === 'OPTIONS') {
     // 204 No Content はボディ・Content-Type を持たない（CORSヘッダのみ）
@@ -1678,7 +1799,7 @@ async function handleFaqRequest(
           skipped_model_call: true,
         })
       );
-      await logFaqQa(faqPorts, context, {
+      await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: chatTemplate.answer,
         responseType: 'chat',
@@ -1760,7 +1881,7 @@ async function handleFaqRequest(
               skipped_model_call: false,
             })
           );
-          await logFaqQa(faqPorts, context, {
+          await logFaqQaForRequest({
             question: sanitized.currentQuestion,
             answer: smalltalk.answer,
             responseType: 'chat',
@@ -1796,7 +1917,7 @@ async function handleFaqRequest(
             skipped_model_call: false,
           })
         );
-        await logFaqQa(faqPorts, context, {
+        await logFaqQaForRequest({
           question: sanitized.currentQuestion,
           answer: fallbackMessage,
           responseType: 'refuse',
@@ -1857,7 +1978,7 @@ async function handleFaqRequest(
             skipped_model_call: operation === 'retrieve',
           })
         );
-        await logFaqQa(faqPorts, context, {
+        await logFaqQaForRequest({
           question: sanitized.currentQuestion,
           answer: response.answer,
           responseType: response.responseType,
@@ -2060,7 +2181,7 @@ async function handleFaqRequest(
           skipped_model_call: true,
         })
       );
-      await logFaqQa(faqPorts, context, {
+      await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: fallbackMessage,
         responseType: 'refuse',
@@ -2118,7 +2239,7 @@ async function handleFaqRequest(
           skipped_model_call: true,
         })
       );
-      await logFaqQa(faqPorts, context, {
+      await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: TECHNICAL_FALLBACK_MESSAGE,
         responseType: 'refuse',
@@ -2233,7 +2354,7 @@ async function handleFaqRequest(
             `kb_retrieval_revision=${kb.telemetry.retrievalRevision} ` +
             `kb_selection_revision=${kb.telemetry.selectionRevision} latency_ms=${totalMs}`
         );
-        await logFaqQa(faqPorts, context, {
+        await logFaqQaForRequest({
           question: sanitized.currentQuestion,
           answer: generationIncomplete ? TECHNICAL_FALLBACK_MESSAGE : fallbackMessage,
           responseType: 'refuse',
@@ -2381,7 +2502,7 @@ async function handleFaqRequest(
       })
     );
 
-    await logFaqQa(faqPorts, context, {
+    await logFaqQaForRequest({
       question: sanitized.currentQuestion,
       answer,
       responseType,
@@ -2574,6 +2695,7 @@ function createNamedAgentPorts(
   setting: FaqChatSettings | null
 ): FaqPorts {
   const kbAgentId = profile.kbAgentId ?? profile.agentId;
+  const notifyQaLog = faqPorts.storage.notifyQaLog;
   return {
     ...faqPorts,
     retrieval: {
@@ -2588,9 +2710,23 @@ function createNamedAgentPorts(
       putQaLog(record) {
         return faqPorts.storage.putQaLog({
           ...record,
-          route: `agents/${profile.agentId}/${record.route}`,
+          route: scopedFaqQaRoute(record.route, profile.agentId),
         });
       },
+      ...(notifyQaLog === undefined
+        ? {}
+        : {
+            notifyQaLog(record: FaqQaLogRecord, timeoutMs: number) {
+              return notifyQaLog.call(
+                faqPorts.storage,
+                {
+                  ...record,
+                  route: scopedFaqQaRoute(record.route, profile.agentId),
+                },
+                timeoutMs
+              );
+            },
+          }),
     },
   };
 }

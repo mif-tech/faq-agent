@@ -34,6 +34,7 @@ export function isLiteSlackTrustClass(value: string): value is LiteSlackTrustCla
 export function requiresLiteSlackDirectMessage(
   _trustClass: LiteSlackTrustClass
 ): boolean {
+  void _trustClass;
   return false;
 }
 

@@ -5,6 +5,7 @@ import type { FaqPorts } from '../ports/index.js';
 import type { FaqChatSettings, FaqStoragePort } from '../ports/storage.js';
 import { getItem, LiteTableNames, putItem } from '../infra/lite-dynamodb.js';
 import { createRemoteFaqRagHttpClient } from './remote/http-client.js';
+import { notifyFaqQaLog } from './faq-qa-slack-notify.js';
 
 interface FaqSettingRow {
   key: string;
@@ -31,6 +32,10 @@ const storage: FaqStoragePort = {
       conditionExpression: 'attribute_not_exists(#ts)',
       expressionAttributeNames: { '#ts': 'ts' },
     });
+  },
+
+  async notifyQaLog(record, timeoutMs) {
+    await notifyFaqQaLog(record, timeoutMs);
   },
 };
 

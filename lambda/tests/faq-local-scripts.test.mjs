@@ -131,6 +131,81 @@ test('FAQ startup connects SAM and DynamoDB on the shared network in free mode',
   assert.match(startup, /FAQ_PORTS_PROFILE["']?\s*(?::|=)\s*["']?free/);
 });
 
+test('FAQ startup passes only parameters accepted by the canonical and lite SAM templates', () => {
+  const startup = readRepoFile('scripts/faq-local-up.sh');
+  const setup = startup.match(
+    /sam_parameters=\((?<common>[\s\S]*?)\n\)\nif \[\[ -f "\$LITE_INIT_SCRIPT" \]\]; then\n(?:\s*#[^\n]*\n)*\s*sam_parameters\+=\((?<lite>[\s\S]*?)\n\s*\)\nelse\n(?:\s*#[^\n]*\n)*\s*sam_parameters\+=\((?<canonical>[\s\S]*?)\n\s*\)\nfi/u
+  )?.groups;
+  assert.ok(setup, 'SAM parameter branches must remain explicit and testable');
+
+  const parameterAssignments = (source) =>
+    Object.fromEntries(
+      [...source.matchAll(/^\s*['"]([A-Za-z][A-Za-z0-9]*)=([^'"]*)['"]/gmu)].map(
+        (match) => [match[1], match[2]]
+      )
+    );
+  const common = parameterAssignments(setup.common);
+  const branchParameters = {
+    lite: { ...common, ...parameterAssignments(setup.lite) },
+    canonical: { ...common, ...parameterAssignments(setup.canonical) },
+  };
+
+  assert.deepEqual(Object.keys(branchParameters.lite).sort(), [
+    'DynamoDBEndpoint',
+    'Environment',
+    'FaqChatCorsOrigin',
+    'FaqPortsProfile',
+  ]);
+  assert.equal(branchParameters.lite.Environment, 'dev');
+  assert.equal(branchParameters.lite.TenantSlug, undefined);
+  assert.equal(branchParameters.lite.DeploymentStage, undefined);
+
+  assert.deepEqual(Object.keys(branchParameters.canonical).sort(), [
+    'AutomationProvider',
+    'BackendType',
+    'ContentModule',
+    'DeploymentStage',
+    'DynamoDBEndpoint',
+    'EnableCognito',
+    'FaqChatCorsOrigin',
+    'FaqPortsProfile',
+    'InternalApiKey',
+    'KbIngestApiKey',
+    'MockTokenSigningKey',
+    'TenantSlug',
+  ]);
+  assert.equal(branchParameters.canonical.TenantSlug, 'local');
+  assert.equal(branchParameters.canonical.DeploymentStage, 'dev');
+  assert.equal(branchParameters.canonical.Environment, undefined);
+
+  const templateParameterNames = (relativePath) => {
+    const parameters = readRepoFile(relativePath).match(
+      /^Parameters:\s*\r?\n(?<body>[\s\S]*?)(?=^(?:Conditions|Mappings|Outputs|Resources|Rules):\s*$)/mu
+    )?.groups?.body;
+    assert.ok(parameters, `${relativePath} must have a Parameters section`);
+    return new Set(
+      [...parameters.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*):\s*$/gmu)].map(
+        (match) => match[1]
+      )
+    );
+  };
+  const assertAccepted = (branch, relativePath) => {
+    const declared = templateParameterNames(relativePath);
+    for (const name of Object.keys(branchParameters[branch])) {
+      assert.ok(declared.has(name), `${relativePath} must accept ${name} from the ${branch} branch`);
+    }
+  };
+
+  const liteTemplate = 'tools/public-sync/overlay/lambda/template.yaml';
+  if (fs.existsSync(path.join(REPO_ROOT, ...liteTemplate.split('/')))) {
+    assertAccepted('canonical', 'lambda/template.yaml');
+    assertAccepted('lite', liteTemplate);
+  } else {
+    // In a generated public tree the overlay has already replaced lambda/template.yaml.
+    assertAccepted('lite', 'lambda/template.yaml');
+  }
+});
+
 test('FAQ startup injects one exact local table namespace into the lite runtime', () => {
   const startup = readRepoFile('scripts/faq-local-up.sh');
   const environmentBlock = startup.match(
@@ -147,7 +222,7 @@ test('FAQ startup injects one exact local table namespace into the lite runtime'
   };
 
   const prefix = stringProperty('FAQ_TABLE_NAME_PREFIX');
-  assert.equal(prefix, 'dev');
+  assert.equal(prefix, 'local-dev');
   assert.deepEqual(
     {
       Settings: stringProperty('FAQ_SETTINGS_TABLE_NAME'),

@@ -116,13 +116,41 @@ await build({
   ],
 });
 
+const handlerModuleUrl = pathToFileURL(outfile).href;
 const {
   __setFaqPortsForTest,
   createFreeFaqPorts,
   createStubFaqPorts,
   handler,
   parseRemoteV1RetrieveRequest,
-} = await import(pathToFileURL(outfile).href);
+} = await import(handlerModuleUrl);
+
+let freshHandlerModuleSequence = 0;
+
+async function importFreshHandlerModule(retentionDays) {
+  const envName = 'FAQ_QA_LOG_RETENTION_DAYS';
+  const hadPreviousValue = Object.hasOwn(process.env, envName);
+  const previousValue = process.env[envName];
+  const originalWarn = console.warn;
+  const warnings = [];
+  if (retentionDays === undefined) delete process.env[envName];
+  else process.env[envName] = retentionDays;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    freshHandlerModuleSequence += 1;
+    const runtime = await import(
+      `${handlerModuleUrl}?retention-test=${freshHandlerModuleSequence}`
+    );
+    return { runtime, warnings };
+  } finally {
+    console.warn = originalWarn;
+    if (hadPreviousValue && previousValue !== undefined) {
+      process.env[envName] = previousValue;
+    } else {
+      delete process.env[envName];
+    }
+  }
+}
 
 const SERVICE_UNAVAILABLE_MESSAGE =
   'ただいま混み合っております。しばらくしてからもう一度お試しください。';
@@ -172,7 +200,7 @@ function createEvent({ messages, rawBody, agentId, method = 'POST' } = {}) {
   };
 }
 
-async function invoke(options, context = TEST_CONTEXT) {
+async function invokeHandler(handlerUnderTest, options, context = TEST_CONTEXT) {
   const captured = { log: [], warn: [], error: [] };
   const originalConsole = {
     log: console.log,
@@ -183,7 +211,7 @@ async function invoke(options, context = TEST_CONTEXT) {
   console.warn = (...args) => captured.warn.push(args);
   console.error = (...args) => captured.error.push(args);
   try {
-    const response = await handler(createEvent(options), context);
+    const response = await handlerUnderTest(createEvent(options), context);
     assert.equal(typeof response, 'object');
     return {
       response,
@@ -195,6 +223,10 @@ async function invoke(options, context = TEST_CONTEXT) {
     console.warn = originalConsole.warn;
     console.error = originalConsole.error;
   }
+}
+
+async function invoke(options, context = TEST_CONTEXT) {
+  return invokeHandler(handler, options, context);
 }
 
 /** faq_chat メトリクスの最終行。0件なら TypeError ではなく読める失敗理由で落とす */
@@ -389,6 +421,14 @@ test('named route: profile上書きとkbAgentIdスコープを既存回答フロ
       },
     ],
   });
+  const notifiedQaLogs = [];
+  const notificationBudgets = [];
+  const notificationReceivers = [];
+  ports.storage.notifyQaLog = async function (record, timeoutMs) {
+    notificationReceivers.push(this);
+    notifiedQaLogs.push(record);
+    notificationBudgets.push(timeoutMs);
+  };
   __setFaqPortsForTest(ports);
 
   const answered = await invoke({
@@ -403,6 +443,8 @@ test('named route: profile上書きとkbAgentIdスコープを既存回答フロ
   assert.equal(ports.answerGeneration.calls[0].model, 'claude-haiku-4-5-20251001');
   assert.equal(ports.answerGeneration.calls[0].maxTokens, 777);
   assert.equal(ports.storage.qaLogs[0].route, 'agents/store-a/kb_answer');
+  assert.deepEqual(notifiedQaLogs[0], ports.storage.qaLogs[0]);
+  assert.ok(notificationBudgets[0] > 0 && notificationBudgets[0] <= 2_000);
 
   const refused = await invoke({
     agentId: 'store-a',
@@ -413,6 +455,76 @@ test('named route: profile上書きとkbAgentIdスコープを既存回答フロ
   assert.equal(refused.body.responseType, 'refuse');
   assert.equal(ports.retrieval.calls[1].kbAgentId, 'shared-kb');
   assert.equal(ports.storage.qaLogs[1].route, 'agents/store-a/refuse_no_hit');
+  assert.deepEqual(notifiedQaLogs[1], ports.storage.qaLogs[1]);
+  assert.ok(notificationBudgets[1] > 0 && notificationBudgets[1] <= 2_000);
+  assert.deepEqual(notificationReceivers, [ports.storage, ports.storage]);
+});
+
+test('named route: Q&A skip warning はroute/agentと取得不能な残余時間を識別できる', async () => {
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    settings: { enabled: true, fallbackMessage: '固定回答' },
+    agentProfiles: [
+      {
+        agentId: 'store-a',
+        enabled: true,
+        model: 'claude-haiku-4-5-20251001',
+      },
+    ],
+  });
+  let notifyCalls = 0;
+  ports.storage.notifyQaLog = async () => {
+    notifyCalls += 1;
+  };
+  __setFaqPortsForTest(ports);
+
+  const writeSkipped = await invoke(
+    {
+      agentId: 'store-a',
+      messages: [{ role: 'user', content: '該当しない質問です' }],
+    },
+    { getRemainingTimeInMillis: () => 800 }
+  );
+  assert.equal(writeSkipped.response.statusCode, 200);
+  assert.ok(
+    writeSkipped.captured.warn.some((args) =>
+      String(args[0]).includes(
+        'qa log write skipped (remaining=800ms, route=agents/store-a/refuse_no_hit, agentId=store-a)'
+      )
+    )
+  );
+
+  const originalDateNow = Date.now;
+  const originalPutQaLog = ports.storage.putQaLog;
+  let fakeNow = originalDateNow();
+  ports.storage.putQaLog = async function (record) {
+    await originalPutQaLog.call(this, record);
+    fakeNow += 2_001;
+  };
+  Date.now = () => fakeNow;
+  let notifySkipped;
+  try {
+    notifySkipped = await invoke(
+      {
+        agentId: 'store-a',
+        messages: [{ role: 'user', content: '該当しない質問です' }],
+      },
+      null
+    );
+  } finally {
+    Date.now = originalDateNow;
+  }
+
+  assert.equal(notifySkipped.response.statusCode, 200);
+  assert.equal(notifyCalls, 0);
+  assert.ok(
+    notifySkipped.captured.warn.some((args) =>
+      String(args[0]).includes(
+        'Q&A Slack notification skipped (budget=-1ms, remaining=n/a, ' +
+          'route=agents/store-a/refuse_no_hit, agentId=store-a)'
+      )
+    )
+  );
 });
 
 test('default route: AgentConfigを一度も呼ばず従来経路をそのまま使う', async () => {
@@ -478,6 +590,91 @@ test('正常系: stub 出典を解決して200を返し、PIIマスク後のQ&A�
   assert.equal(putCalls[0].question.includes('test.user@example.com'), false);
   assert.match(putCalls[0].question, /\[メール\]/);
   assert.deepEqual(putCalls[0].sources, ['料金']);
+});
+
+async function writeQaLogWithRetention(retentionDays) {
+  const { runtime, warnings } = await importFreshHandlerModule(retentionDays);
+  const ports = runtime.createStubFaqPorts({
+    retrieval: 'empty',
+    settings: { enabled: true, fallbackMessage: '固定回答' },
+  });
+  runtime.__setFaqPortsForTest(ports);
+  const beforeEpochSeconds = Math.floor(Date.now() / 1_000);
+  const first = await invokeHandler(runtime.handler, {
+    messages: [{ role: 'user', content: '保持期間の確認です' }],
+  });
+  const afterEpochSeconds = Math.floor(Date.now() / 1_000);
+  assert.equal(first.response.statusCode, 200);
+  assert.equal(ports.storage.qaLogs.length, 1);
+  return {
+    runtime,
+    ports,
+    record: ports.storage.qaLogs[0],
+    warnings,
+    invocationWarnings: first.captured.warn,
+    beforeEpochSeconds,
+    afterEpochSeconds,
+  };
+}
+
+function assertRetentionTtl(result, retentionDays) {
+  const retentionSeconds = retentionDays * 24 * 3_600;
+  assert.equal(typeof result.record.ttl, 'number');
+  assert.ok(result.record.ttl >= result.beforeEpochSeconds + retentionSeconds);
+  assert.ok(result.record.ttl <= result.afterEpochSeconds + retentionSeconds);
+}
+
+test('Q&A保持期間: cold startで既定・任意日数・0・不正値を決定し、0だけttlを省略する', async () => {
+  for (const raw of [undefined, '   ']) {
+    const result = await writeQaLogWithRetention(raw);
+    assertRetentionTtl(result, 180);
+    assert.deepEqual(result.warnings, []);
+  }
+
+  const custom = await writeQaLogWithRetention('7');
+  assertRetentionTtl(custom, 7);
+  assert.deepEqual(custom.warnings, []);
+
+  const maximum = await writeQaLogWithRetention('3650');
+  assertRetentionTtl(maximum, 3650);
+  assert.deepEqual(maximum.warnings, []);
+
+  const indefinite = await writeQaLogWithRetention('0');
+  assert.equal(Object.hasOwn(indefinite.record, 'ttl'), false);
+  assert.deepEqual(indefinite.warnings, []);
+
+  const expectedWarning =
+    '[faq-chat] invalid FAQ_QA_LOG_RETENTION_DAYS; using default 180 days';
+  for (const raw of [
+    '-1',
+    '1.5',
+    '0x10',
+    '1e3',
+    '3651',
+    'abc',
+    'Infinity',
+    String(Number.MAX_SAFE_INTEGER + 1),
+  ]) {
+    const result = await writeQaLogWithRetention(raw);
+    assertRetentionTtl(result, 180);
+    assert.deepEqual(result.warnings, [[expectedWarning]]);
+    assert.equal(
+      result.invocationWarnings.some((args) => args[0] === expectedWarning),
+      false,
+      'cold-start warning must not repeat during the first invocation'
+    );
+
+    const second = await invokeHandler(result.runtime.handler, {
+      messages: [{ role: 'user', content: '同じcold startの2回目です' }],
+    });
+    assert.equal(second.response.statusCode, 200);
+    assert.equal(result.ports.storage.qaLogs.length, 2);
+    assert.equal(
+      second.captured.warn.some((args) => args[0] === expectedWarning),
+      false,
+      'cold-start warning must not repeat during later invocations'
+    );
+  }
 });
 
 test('free ports: grounded demo は実検索結果から200 kb_answerと解決済みsourceを返す', async () => {
@@ -728,24 +925,157 @@ test('Settings未設定: loadSettings null は503 dark shipでadapterを呼ば�
   assert.equal(ports.storage.qaLogs.length, 0);
 });
 
-test('Q&A書込失敗: 応答を壊さずwarnだけを残す', async () => {
+test('Q&A書込失敗: default/named context付きwarnだけを残して応答を壊さない', async () => {
   const ports = createStubFaqPorts({
     retrieval: 'empty',
     settings: { enabled: true, fallbackMessage: '固定回答' },
+    agentProfiles: [
+      {
+        agentId: 'store-a',
+        enabled: true,
+        model: 'claude-haiku-4-5-20251001',
+      },
+    ],
   });
   ports.storage.putQaLog = async () => {
     throw new Error('synthetic write failure');
   };
+  let notifyCalls = 0;
+  ports.storage.notifyQaLog = async () => {
+    notifyCalls += 1;
+  };
   __setFaqPortsForTest(ports);
 
-  const { response, body, captured } = await invoke({
-    messages: [{ role: 'user', content: '該当しない質問です' }],
-  });
+  const { response, body, captured } = await invoke(
+    {
+      agentId: 'store-a',
+      messages: [{ role: 'user', content: '該当しない質問です' }],
+    },
+    null
+  );
 
   assert.equal(response.statusCode, 200);
   assert.equal(body.answer, '固定回答');
   assert.ok(
-    captured.warn.some((args) => String(args[0]).includes('qa log write failed'))
+    captured.warn.some(
+      (args) =>
+        args.length === 1 &&
+        args[0] ===
+          '[faq-chat] qa log write failed: synthetic write failure ' +
+            '(remaining=n/a, route=agents/store-a/refuse_no_hit, agentId=store-a)'
+    )
+  );
+
+  const defaultWrite = await invoke({
+    messages: [{ role: 'user', content: '該当しない質問です' }],
+  });
+  assert.equal(defaultWrite.response.statusCode, 200);
+  assert.ok(
+    defaultWrite.captured.warn.some(
+      (args) =>
+        args.length === 1 &&
+        args[0] ===
+          '[faq-chat] qa log write failed: synthetic write failure ' +
+            '(remaining=30000ms, route=refuse_no_hit)'
+    )
+  );
+  assert.equal(notifyCalls, 0);
+});
+
+test('Q&A書込成功: Putと同じレコードを残余予算付きで通知しwrite timeoutを出さない', async () => {
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    settings: { enabled: true, fallbackMessage: '固定回答' },
+  });
+  let putRecord;
+  let notifiedRecord;
+  let notificationBudget;
+  let notificationReceiver;
+  ports.storage.putQaLog = async (record) => {
+    putRecord = record;
+  };
+  ports.storage.notifyQaLog = async function (record, timeoutMs) {
+    notificationReceiver = this;
+    notifiedRecord = record;
+    notificationBudget = timeoutMs;
+  };
+  __setFaqPortsForTest(ports);
+
+  const { response, captured } = await invoke(
+    { messages: [{ role: 'user', content: '該当しない質問です' }] },
+    { getRemainingTimeInMillis: () => 1_000 }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.strictEqual(notifiedRecord, putRecord);
+  assert.strictEqual(notificationReceiver, ports.storage);
+  assert.ok(notificationBudget > 0 && notificationBudget <= 200);
+  assert.equal(
+    captured.warn.some((args) => String(args[0]).includes('qa log write timed out')),
+    false
+  );
+});
+
+test('Q&A通知失敗: 応答を壊さず秘密・本文を含まない固定warnだけを残す', async () => {
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    settings: { enabled: true, fallbackMessage: '固定回答' },
+  });
+  ports.storage.notifyQaLog = async () => {
+    throw new Error(
+      'https://hooks.slack.com/services/SECRET synthetic notification question'
+    );
+  };
+  __setFaqPortsForTest(ports);
+
+  const { response, captured } = await invoke({
+    messages: [{ role: 'user', content: 'synthetic notification question' }],
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.ok(
+    captured.warn.some(
+      (args) => args.length === 1 && args[0] === '[faq-chat] Q&A Slack notification failed'
+    )
+  );
+  for (const args of captured.warn) {
+    const warning = args.map(String).join(' ');
+    assert.equal(warning.includes('hooks.slack.com'), false);
+    assert.equal(warning.includes('synthetic notification question'), false);
+  }
+});
+
+test('Q&A通知予算なし: Put成功後に通知を開始せず専用warnを残す', async () => {
+  const ports = createStubFaqPorts({
+    retrieval: 'empty',
+    settings: { enabled: true, fallbackMessage: '固定回答' },
+  });
+  let putCompleted = false;
+  let notifyCalls = 0;
+  ports.storage.putQaLog = async () => {
+    putCompleted = true;
+  };
+  ports.storage.notifyQaLog = async () => {
+    notifyCalls += 1;
+  };
+  __setFaqPortsForTest(ports);
+
+  const { response, captured } = await invoke(
+    { messages: [{ role: 'user', content: '該当しない質問です' }] },
+    { getRemainingTimeInMillis: () => (putCompleted ? 800 : 1_000) }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(putCompleted, true);
+  assert.equal(notifyCalls, 0);
+  assert.ok(
+    captured.warn.some((args) =>
+      String(args[0]).includes('[faq-chat] Q&A Slack notification skipped')
+    )
+  );
+  assert.equal(
+    captured.warn.some((args) => String(args[0]).includes('qa log write timed out')),
+    false
   );
 });
 
@@ -768,27 +1098,59 @@ test('Q&A書込予算なし: Putを開始せず即応答する', async () => {
   );
 });
 
-test('Q&A書込timeout: 遅いPutを待ち切らず応答する', async () => {
+test('Q&A書込timeout: default/named context付きwarnを残して遅いPutを待ち切らない', async () => {
   const ports = createStubFaqPorts({
     retrieval: 'empty',
     settings: { enabled: true, fallbackMessage: '固定回答' },
+    agentProfiles: [
+      {
+        agentId: 'store-a',
+        enabled: true,
+        model: 'claude-haiku-4-5-20251001',
+      },
+    ],
   });
   let writeStarted = false;
+  let notifyCalls = 0;
   ports.storage.putQaLog = () => {
     writeStarted = true;
     return new Promise(() => {});
   };
+  ports.storage.notifyQaLog = async () => {
+    notifyCalls += 1;
+  };
   __setFaqPortsForTest(ports);
 
   const { response, captured } = await invoke(
-    { messages: [{ role: 'user', content: '該当しない質問です' }] },
+    {
+      agentId: 'store-a',
+      messages: [{ role: 'user', content: '該当しない質問です' }],
+    },
     { getRemainingTimeInMillis: () => 820 }
   );
 
   assert.equal(response.statusCode, 200);
   assert.equal(writeStarted, true);
-  assert.ok(
-    captured.warn.some((args) => String(args[0]).includes('qa log write timed out'))
+  assert.equal(notifyCalls, 0);
+  const timeoutWarning = captured.warn
+    .map((args) => String(args[0]))
+    .find((warning) => warning.includes('qa log write timed out'));
+  assert.match(
+    timeoutWarning,
+    /^\[faq-chat\] qa log write timed out \(>\d+ms, remaining=820ms, route=agents\/store-a\/refuse_no_hit, agentId=store-a\), responding without waiting$/u
+  );
+
+  const defaultTimeout = await invoke(
+    { messages: [{ role: 'user', content: '該当しない質問です' }] },
+    { getRemainingTimeInMillis: () => 820 }
+  );
+  assert.equal(defaultTimeout.response.statusCode, 200);
+  const defaultTimeoutWarning = defaultTimeout.captured.warn
+    .map((args) => String(args[0]))
+    .find((warning) => warning.includes('qa log write timed out'));
+  assert.match(
+    defaultTimeoutWarning,
+    /^\[faq-chat\] qa log write timed out \(>\d+ms, remaining=820ms, route=refuse_no_hit\), responding without waiting$/u
   );
 });
 

@@ -85,6 +85,19 @@ Parameters:
     NoEcho: true
     Description: Optional API key; empty uses the deterministic grounded demo generator
 
+  FaqQaNotifyWebhookUrl:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Optional Slack Incoming Webhook URL for best-effort FAQ Q&A notifications
+
+  FaqQaLogRetentionDays:
+    Type: String
+    Default: '180'
+    AllowedPattern: '^(?:[0-9]|[1-9][0-9]{1,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|36[0-4][0-9]|3650)$'
+    ConstraintDescription: Must be an ASCII base-10 integer from 0 to 3650 without signs, whitespace, decimal points, exponents, hexadecimal notation, or multi-digit leading zeros
+    Description: FAQ Q&A log retention days; use a base-10 integer from 0 to 3650, where 0 keeps records until manually deleted
+
   SlackSigningSecret:
     Type: String
     Default: ''
@@ -356,6 +369,8 @@ Resources:
           FAQ_AGENT_CONFIG_TABLE_NAME: !Ref AgentConfigTable
           FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: !Ref KnowledgeEntriesTable
           FAQ_QA_LOGS_TABLE_NAME: !Ref FaqQaLogsTable
+          FAQ_QA_LOG_RETENTION_DAYS: !Ref FaqQaLogRetentionDays
+          FAQ_QA_NOTIFY_WEBHOOK_URL: !Ref FaqQaNotifyWebhookUrl
       Events:
         FaqChatApi:
           Type: HttpApi

@@ -14,7 +14,7 @@ import type { FaqChatSettings } from '../lambda/functions/faq-chat/ports/storage
 
 const LOCAL_DYNAMODB_ENDPOINT = 'http://localhost:8000';
 const LOCAL_REGION = 'us-west-2';
-const TABLE_PREFIX = 'dev';
+const TABLE_PREFIX = 'local-dev';
 const KNOWLEDGE_TABLE = `${TABLE_PREFIX}-KnowledgeEntries`;
 const SETTINGS_TABLE = `${TABLE_PREFIX}-Settings`;
 const SAMPLE_KB_URL = new URL(
