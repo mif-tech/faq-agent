@@ -48,12 +48,18 @@ export interface FaqQaLogRecord {
   sources: string[];
   model: string | null;
   totalMs: number | null;
-  ttl: number;
+  /** Unix expiry time; omitted when the deployment retains Q&A logs indefinitely. */
+  ttl?: number;
 }
 
 export interface FaqStoragePort {
   loadSettings(): Promise<FaqChatSettings | null>;
   putQaLog(record: FaqQaLogRecord): Promise<void>;
+  /**
+   * Optional best-effort delivery after the handler has observed a successful Put.
+   * `timeoutMs` is positive and bounded by the handler's shared Q&A side-effect deadline.
+   */
+  notifyQaLog?(record: FaqQaLogRecord, timeoutMs: number): Promise<void>;
 }
 
 /** Minimal public projection consumed by the free lexical retriever. */

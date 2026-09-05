@@ -278,6 +278,103 @@ test('FaqChatFunction receives the exact candidate table names without the legac
   }
 });
 
+test('FAQ Q&A webhook is an optional secret wired only to the FAQ function', () => {
+  assert.deepEqual(template.Parameters.FaqQaNotifyWebhookUrl, {
+    Type: 'String',
+    Default: '',
+    NoEcho: true,
+    Description: 'Optional Slack Incoming Webhook URL for best-effort FAQ Q&A notifications',
+  });
+
+  const environmentBindings = Object.entries(template.Resources)
+    .filter(([, resource]) =>
+      Object.hasOwn(
+        resource.Properties?.Environment?.Variables ?? {},
+        'FAQ_QA_NOTIFY_WEBHOOK_URL'
+      )
+    )
+    .map(([logicalId]) => logicalId);
+  assert.deepEqual(environmentBindings, ['FaqChatFunction']);
+  assert.deepEqual(
+    template.Resources.FaqChatFunction.Properties.Environment.Variables
+      .FAQ_QA_NOTIFY_WEBHOOK_URL,
+    { Ref: 'FaqQaNotifyWebhookUrl' }
+  );
+  assert.equal(
+    JSON.stringify(template.Rules.SlackConfigurationMustBeComplete).includes(
+      'FaqQaNotifyWebhookUrl'
+    ),
+    false,
+    'FAQ usage notification must remain independent from the Slack bot configuration'
+  );
+  assert.doesNotMatch(templateSource, /hooks\.slack\.com\/services\//u);
+});
+
+test('FAQ Q&A retention accepts zero days and is wired only to the FAQ function', () => {
+  const retentionParameter = template.Parameters.FaqQaLogRetentionDays;
+  assert.deepEqual(retentionParameter, {
+    Type: 'String',
+    Default: '180',
+    AllowedPattern:
+      '^(?:[0-9]|[1-9][0-9]{1,2}|[1-2][0-9]{3}|3[0-5][0-9]{2}|36[0-4][0-9]|3650)$',
+    ConstraintDescription:
+      'Must be an ASCII base-10 integer from 0 to 3650 without signs, whitespace, decimal points, exponents, hexadecimal notation, or multi-digit leading zeros',
+    Description:
+      'FAQ Q&A log retention days; use a base-10 integer from 0 to 3650, where 0 keeps records until manually deleted',
+  });
+
+  const retentionPattern = new RegExp(retentionParameter.AllowedPattern, 'u');
+  for (const accepted of [
+    '0',
+    '9',
+    '10',
+    '999',
+    '1000',
+    '2999',
+    '3000',
+    '3599',
+    '3600',
+    '3649',
+    '3650',
+  ]) {
+    assert.equal(retentionPattern.test(accepted), true, `accepted: ${accepted}`);
+  }
+  for (const rejected of [
+    '',
+    '00',
+    '01',
+    '-1',
+    '+1',
+    ' 1',
+    '1 ',
+    '1.0',
+    '1e3',
+    '0x10',
+    '3651',
+  ]) {
+    assert.equal(retentionPattern.test(rejected), false, `rejected: ${rejected}`);
+  }
+
+  const environmentBindings = Object.entries(template.Resources)
+    .filter(([, resource]) =>
+      Object.hasOwn(
+        resource.Properties?.Environment?.Variables ?? {},
+        'FAQ_QA_LOG_RETENTION_DAYS'
+      )
+    )
+    .map(([logicalId]) => logicalId);
+  assert.deepEqual(environmentBindings, ['FaqChatFunction']);
+  assert.deepEqual(
+    template.Resources.FaqChatFunction.Properties.Environment.Variables
+      .FAQ_QA_LOG_RETENTION_DAYS,
+    { Ref: 'FaqQaLogRetentionDays' }
+  );
+  assert.deepEqual(template.Resources.FaqQaLogsTable.Properties.TimeToLiveSpecification, {
+    AttributeName: 'ttl',
+    Enabled: true,
+  });
+});
+
 test('FAQ DynamoDB IAM maps each allowed action to exactly the required table ARNs', () => {
   const policies = template.Resources.FaqChatFunction.Properties.Policies;
   const statements = collectStatements(policies);

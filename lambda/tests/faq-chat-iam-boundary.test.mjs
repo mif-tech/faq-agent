@@ -111,8 +111,9 @@ for (const contract of contracts) {
         assert.match(
           statement,
           new RegExp(
-            `Resource:\\s*\\n\\s+- !Sub arn:aws:dynamodb:\\$\\{AWS::Region\\}:` +
-              `\\$\\{AWS::AccountId\\}:table/\\$\\{Environment\\}-${suffix}`,
+            `Resource:\\s*\\n\\s+- !Sub 'arn:\\$\\{AWS::Partition\\}:dynamodb:` +
+              `\\$\\{AWS::Region\\}:\\$\\{AWS::AccountId\\}:table/` +
+              `\\$\\{TenantSlug\\}-\\$\\{DeploymentStage\\}-${suffix}'`,
             'u'
           )
         );
@@ -126,7 +127,10 @@ for (const contract of contracts) {
         } else {
           assert.match(statement, new RegExp(`Resource: !GetAtt ${logicalId}\\.Arn`, 'u'));
         }
-        assert.doesNotMatch(statement, /table\/\$\{Environment\}-/u);
+        assert.doesNotMatch(
+          statement,
+          /table\/\$\{TenantSlug\}-\$\{DeploymentStage\}-/u
+        );
       }
     }
 

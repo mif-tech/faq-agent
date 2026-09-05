@@ -42,7 +42,13 @@ const policy: SlackAgentPolicyPort<LiteSlackAgentTrustClass> = {
     if (config.kbTable !== runtime.kbTableName) {
       throw new Error('AgentConfig KB table mismatch');
     }
-    if (config.qaLogTable !== runtime.qaLogTableName) {
+    // Both sides are optional in the shared port; the free Slack agent always keeps a
+    // Q&A log, so presence is asserted here as well (defense in depth beyond composition).
+    if (
+      !config.qaLogTable ||
+      !runtime.qaLogTableName ||
+      config.qaLogTable !== runtime.qaLogTableName
+    ) {
       throw new Error('AgentConfig Q&A log table mismatch');
     }
     if (config.embeddingPolicy !== 'disabled') {

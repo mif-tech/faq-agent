@@ -33,7 +33,7 @@ export interface SlackAgentResolvedConfig<TTrustClass extends string = string> {
   logPolicy: SlackAgentLogPolicy;
   embeddingPolicy: SlackAgentEmbeddingPolicy;
   kbTable: string;
-  qaLogTable: string;
+  qaLogTable?: string;
   enabled: boolean;
   qaLogNotification?: SlackAgentQaLogNotificationConfig;
 }
@@ -123,7 +123,7 @@ export interface SlackAgentRuntimeBoundary<TTrustClass extends string> {
   agentId: string;
   trustClass: TTrustClass;
   kbTableName: string;
-  qaLogTableName: string;
+  qaLogTableName?: string;
 }
 
 export type SlackAgentJobPolicyDecision = 'process' | 'ack';

@@ -49,7 +49,7 @@ if [[ -f "$LITE_INIT_SCRIPT" ]]; then
   AWS_DEFAULT_REGION=us-west-2 \
   AWS_EC2_METADATA_DISABLED=true \
   DYNAMODB_ENDPOINT=http://localhost:8000 \
-  DYNAMODB_TABLE_PREFIX=dev \
+  DYNAMODB_TABLE_PREFIX=local-dev \
     npx tsx scripts/dynamodb-init-faq.ts
 else
   AWS_ACCESS_KEY_ID=local \
@@ -58,7 +58,7 @@ else
   AWS_DEFAULT_REGION=us-west-2 \
   AWS_EC2_METADATA_DISABLED=true \
   DYNAMODB_ENDPOINT=http://localhost:8000 \
-  DYNAMODB_TABLE_PREFIX=dev \
+  DYNAMODB_TABLE_PREFIX=local-dev \
   SKIP_SEED=true \
     npx tsx scripts/dynamodb-init.ts --only "$FAQ_TABLES"
 fi
@@ -76,12 +76,12 @@ const fs = require('node:fs');
 const faqEnvironment = {
   FAQ_PORTS_PROFILE: 'free',
   DYNAMODB_ENDPOINT: 'http://dynamodb-local:8000',
-  DYNAMODB_TABLE_PREFIX: 'dev',
-  FAQ_TABLE_NAME_PREFIX: 'dev',
-  FAQ_SETTINGS_TABLE_NAME: 'dev-Settings',
-  FAQ_AGENT_CONFIG_TABLE_NAME: 'dev-AgentConfig',
-  FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: 'dev-KnowledgeEntries',
-  FAQ_QA_LOGS_TABLE_NAME: 'dev-FaqQaLogs',
+  DYNAMODB_TABLE_PREFIX: 'local-dev',
+  FAQ_TABLE_NAME_PREFIX: 'local-dev',
+  FAQ_SETTINGS_TABLE_NAME: 'local-dev-Settings',
+  FAQ_AGENT_CONFIG_TABLE_NAME: 'local-dev-AgentConfig',
+  FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: 'local-dev-KnowledgeEntries',
+  FAQ_QA_LOGS_TABLE_NAME: 'local-dev-FaqQaLogs',
   AWS_ACCESS_KEY_ID: 'local',
   AWS_SECRET_ACCESS_KEY: 'local',
   AWS_REGION: 'us-west-2',
@@ -113,15 +113,25 @@ printf '%s\n\n' "curl -s -X POST http://localhost:3000/faq-chat -H 'Content-Type
 
 cd "$LAMBDA_DIR"
 sam_parameters=(
-  'Environment=dev'
   'DynamoDBEndpoint=http://dynamodb-local:8000'
   'FaqPortsProfile=free'
   'FaqChatCorsOrigin=*'
 )
-if [[ ! -f "$LITE_INIT_SCRIPT" ]]; then
+if [[ -f "$LITE_INIT_SCRIPT" ]]; then
+  # The standalone public template intentionally keeps its Environment contract.
   sam_parameters+=(
+    'Environment=dev'
+  )
+else
+  sam_parameters+=(
+    'TenantSlug=local'
+    'DeploymentStage=dev'
+    'ContentModule=generic'
     'BackendType=dynamodb'
+    'AutomationProvider=none'
+    'EnableCognito=false'
     'InternalApiKey=local-dev-internal-key'
+    'MockTokenSigningKey=local-dev-mock-token-signing-key'
     'KbIngestApiKey=local-dev-kb-ingest-key'
   )
 fi

@@ -319,9 +319,12 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
 
 test('public production adapter delegates remote creation and keeps free/storage contracts', async () => {
   const state = {
+    events: [],
     freeCalls: [],
     getCalls: [],
     putCalls: [],
+    notifyCalls: [],
+    putError: null,
     remoteCalls: 0,
     remotePort: { kind: 'remote-http-client' },
     agentConfigPort: { kind: 'lite-agent-config' },
@@ -348,6 +351,10 @@ test('public production adapter delegates remote creation and keeps free/storage
       }));
       esbuild.onResolve({ filter: /remote[\\/]http-client\.js$/ }, () => ({
         path: 'remote-http-client',
+        namespace: 'lite-test',
+      }));
+      esbuild.onResolve({ filter: /faq-qa-slack-notify\.js$/ }, () => ({
+        path: 'faq-qa-slack-notify',
         namespace: 'lite-test',
       }));
       esbuild.onResolve({ filter: /infra[\\/]lite-dynamodb\.js$/ }, () => ({
@@ -379,6 +386,13 @@ test('public production adapter delegates remote creation and keeps free/storage
         }`,
         loader: 'js',
       }));
+      esbuild.onLoad({ filter: /^faq-qa-slack-notify$/, namespace: 'lite-test' }, () => ({
+        contents: `export async function notifyFaqQaLog(record, timeoutMs) {
+          globalThis.__faqLiteStorageState.events.push('notify');
+          globalThis.__faqLiteStorageState.notifyCalls.push({ record, timeoutMs });
+        }`,
+        loader: 'js',
+      }));
       esbuild.onLoad({ filter: /^lite-dynamodb$/, namespace: 'lite-test' }, () => ({
         contents: `
           export const LiteTableNames = {
@@ -392,7 +406,11 @@ test('public production adapter delegates remote creation and keeps free/storage
             return globalThis.__faqLiteStorageState.settingRow;
           }
           export async function putItem(table, item, options) {
+            globalThis.__faqLiteStorageState.events.push('put');
             globalThis.__faqLiteStorageState.putCalls.push({ table, item, options });
+            if (globalThis.__faqLiteStorageState.putError) {
+              throw globalThis.__faqLiteStorageState.putError;
+            }
           }
         `,
         loader: 'js',
@@ -440,6 +458,24 @@ test('public production adapter delegates remote creation and keeps free/storage
       },
     },
   ]);
+  assert.deepEqual(state.events, ['put']);
+  assert.deepEqual(state.notifyCalls, []);
+
+  await adapters.storage.notifyQaLog(record, 375);
+  assert.deepEqual(state.events, ['put', 'notify']);
+  assert.deepEqual(state.notifyCalls, [{ record, timeoutMs: 375 }]);
+
+  state.putError = new Error('put failed');
+  await assert.rejects(
+    adapters.storage.putQaLog({ ...record, ts: `${record.ts}-failed` }),
+    /put failed/
+  );
+  assert.deepEqual(state.events, ['put', 'notify', 'put']);
+  assert.deepEqual(
+    state.notifyCalls,
+    [{ record, timeoutMs: 375 }],
+    'putQaLog must remain persistence-only even when a later Put fails'
+  );
 });
 
 test('public KB source filters active public default-agent rows twice', async () => {

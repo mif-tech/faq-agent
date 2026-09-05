@@ -54,10 +54,13 @@ export function createLiteSlackAgentComposition(
   if (boundary.trustClass !== 'slack') {
     throw new Error('Lite Slack agent composition trust class must be slack');
   }
+  // The shared port leaves qaLogTableName optional for editions that keep no Q&A log.
+  // The free Slack agent always writes one, so a missing value stays a required error.
+  const qaLogTableName = boundary.qaLogTableName ?? '';
   for (const [name, value] of [
     ['agentId', boundary.agentId],
     ['kbTableName', boundary.kbTableName],
-    ['qaLogTableName', boundary.qaLogTableName],
+    ['qaLogTableName', qaLogTableName],
   ] as const) {
     if (!value.trim()) {
       throw new Error(`Lite Slack agent composition ${name} is required`);
@@ -71,7 +74,7 @@ export function createLiteSlackAgentComposition(
     kb: liteSlackKbPort,
     generation,
     qaLog: new LiteDynamoSlackAgentQaLogWriter(
-      boundary.qaLogTableName,
+      qaLogTableName,
       boundary.agentId,
       options.documentClient
     ),

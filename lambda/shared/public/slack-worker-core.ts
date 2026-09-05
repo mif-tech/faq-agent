@@ -475,6 +475,9 @@ async function processJob<TTrustClass extends string>(
       sourceEventId: job.eventId,
       inputTokens: completion.inputTokens,
       outputTokens: completion.outputTokens,
+      // Lets a terminal reply produced without a provider call (for example an input
+      // budget guard) be told apart from a model answer in the completion metric.
+      stopReason: completion.stopReason,
       knowledgeSourceCount: knowledge.sourceIds.length,
     })
   );

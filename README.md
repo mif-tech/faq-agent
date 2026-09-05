@@ -118,8 +118,8 @@ npm run eval:mock
 - 検索は小規模 KB 向けの文字 bigram とキーワードだけです。埋め込み検索や高度なランキングは含みません。
 - handler 内の smalltalk 分岐は正本との互換性のため残っています。free profile の既定は `template_only` で、`smalltalkMode=generated` は `ANTHROPIC_API_KEY` を持つ環境でのみ opt-in できます。
 - 同梱データは架空のサンプルです。非公開の評価質問、会話、結果、顧客データは含みません。
-- Q&A は接触先らしき文字列をマスクして `FaqQaLogs` に保存し、`ttl` で180日後を期限にします。ただし DynamoDB TTL の削除時刻は厳密ではありません。
-- Q&A ログの Streams consumer、通知、恒久アーカイブはこの alpha 版に含みません。テンプレートも Streams を有効化しません。
+- Q&A は接触先らしき文字列をマスクして `FaqQaLogs` に保存し、SAM parameter `FaqQaLogRetentionDays`（既定180日）に従う `ttl` を設定します。DynamoDB TTL の削除時刻は厳密ではありません。
+- Q&A ログの Streams consumer と恒久アーカイブはこの alpha 版に含みません。テンプレートも Streams を有効化しません。任意の Slack 通知は、保存成功後に FAQ Lambda から直接送ります。
 - ファイルアップロード、認証、管理画面、監視、WAF、独自ドメイン、バックアップは含みません。
 - Docker Desktop の業務利用条件は組織規模等で異なります。所属組織で確認し、必要なら Docker Engine を利用してください。
 
@@ -144,7 +144,19 @@ sam deploy \
   --parameter-overrides FaqChatCorsOrigin=https://YOUR_UI_ORIGIN
 ```
 
-⚠️ `sam deploy --guided` は `NoEcho` パラメータ（`AnthropicApiKey`・`FaqRemoteRagExternalId`・Slack の secret 2値）の入力を、既定値の表示なしで求めます。SAM CLI のバージョンによっては空のまま進められないため、これらを使わない最小デプロイでは上記の非対話コマンド（未指定のパラメータは既定の空になり、QAログ表 `{Environment}-{FaqTableNamespace}-SlackQaLogs` を除く Slack リソースは作成されません）を推奨します。`--guided` を使う場合も「Save arguments to configuration file」で secret を `samconfig.toml` に保存しないでください。
+`FaqQaLogRetentionDays` は0以上3650以下の整数日（最大10年）です。既定値は180です。SAM parameter は符号・空白・小数点・指数表記・16進表記・複数桁の先頭0を含まない正規形の ASCII 十進文字列だけを受理し、それ以外はデプロイ前に拒否します。`0` にすると新しい Q&A レコードから `ttl` を省略し、手動で削除するまで保持します。テーブルの DynamoDB TTL 設定自体は有効なままなので、変更前に `ttl` が付いた既存レコードはそれぞれの期限後に削除対象になります。実行時環境変数の防御的な読み取りは前後の空白を除く ASCII 十進数字だけを受理し、`1.0`、`1e3`、`0x10` などの不正または範囲外の値は、cold start ごとに固定 warn を最大1回記録して180日にフォールバックします。この alpha 版には恒久アーカイブがないため、`0` を選ぶ場合は保存量、削除手順、プライバシーポリシーを別途設計してください。
+
+⚠️ `sam deploy --guided` は `NoEcho` パラメータ（`AnthropicApiKey`・`FaqRemoteRagExternalId`・`FaqQaNotifyWebhookUrl`・Slack の secret 2値）の入力を、既定値の表示なしで求めます。SAM CLI のバージョンによっては空のまま進められないため、これらを使わない最小デプロイでは上記の非対話コマンド（未指定のパラメータは既定の空になり、QAログ表 `{Environment}-{FaqTableNamespace}-SlackQaLogs` を除く Slack リソースは作成されません）を推奨します。`--guided` を使う場合も「Save arguments to configuration file」で secret を `samconfig.toml` に保存しないでください。
+
+### FAQ Q&A の Slack 通知（任意）
+
+SAM parameter `FaqQaNotifyWebhookUrl` に Slack Incoming Webhook URL を秘密管理されたデプロイ入力から渡すと、Q&A ログの DynamoDB 保存成功後に通知します。受理するのは標準の `https://hooks.slack.com/services/{workspace}/{channel}/{secret}` 形式（3つの path segment は ASCII 英数字のみ）です。userinfo、独自 port、query、fragment、segment の不足・追加を含む URL は固定 warn を残して送信せず、HTTP redirect も追従しません。未指定（既定の空文字）では fetch もログも発生せず、既存挙動のままです。この機能は下記 Slack bot の有効化条件や資格情報とは独立しています。DynamoDB の Q&A ログが正本であり、Slack 通知は配送保証のない best-effort の補助経路です。
+
+通知には、保存済みレコードと同じ接触先マスク・NFKC 正規化済みの質問と回答の冒頭、`responseType`、`route`、`totalMs` などを含めます。Webhook POST は呼び出し元の残余予算に従い最長2秒で打ち切ります。HTTPエラー・通信失敗・タイムアウトは Lambda の warn ログに残し、FAQ の応答を失敗させません。URL は `samconfig.toml`、shell history、CI log、公開コードへ保存せず、secret 管理された CI/CD 入力などから渡してください。
+
+Slack Incoming Webhook の持続的な送信目安は通知先1チャンネルあたり約1件/秒です。この直接通知経路は FAQ 応答を遅らせないため、同期リトライや DLQ への退避を行いません。Slack が HTTP 429 を返した通知は warn を残して破棄します。高頻度の利用や配送保証が必要な場合は、DynamoDB Streams + SQS などのキュー付き consumer へ移行し、利用者の応答経路と分離してください。
+
+運用時は Lambda の CloudWatch Logs で安定 prefix `[faq-chat] Q&A Slack notification` を検索し、`failed`、`timed out`、`rate limited`、`skipped` の warn を対象に metric filter と alarm を設定してください。`started` は有効な正の送信予算で実際に送信を開始する直前、`completed` は成功時だけ記録されます。非正値の予算では fetch を開始せず、handler が通知前に予算切れを検知した場合は `budget`、`remaining`、`route`（named agent では `agentId` も）、adapter の防御で検知した場合は `budgetMs=0`、元の `requestedMs`、`reason=non_positive_budget` を持つ `skipped` だけを記録します。どちらも `started` / `completed` は発生しません。`started` があり `completed` がない試行も調査対象です。通知漏れの確認と再処理は Slack 履歴ではなく DynamoDB の Q&A ログを基準に行ってください。
 
 ### Slack bot（フリー版）
 
