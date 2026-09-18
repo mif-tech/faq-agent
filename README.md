@@ -26,7 +26,7 @@ MIF管理の検索・生成APIを接続した商用構成は、実顧客向け�
 ## 設計上の要点
 
 - **交換可能な実行境界:** HTTP handler と検索・生成・保存の実装を [`ports/`](lambda/functions/faq-chat/ports/) で分離しています。`free` / `remote` を切り替えても、入力ガード、Q&Aログ、PIIマスク、応答封筒は lite 側に残ります。
-- **fail-closed な remote 境界:** remote の必須設定不足や組み合わせ不整合は CloudFormation Rules と初期化時検証で拒否します。remote 障害時に `free` へ自動フォールバックせず、[`remote-v1`](lambda/functions/faq-chat/adapters/remote/README.md) の入出力 DTO も未知フィールドを含めて検証します。
+- **fail-closed な remote 境界:** remote の必須設定不足や組み合わせ不整合は CloudFormation Rules と初期化時検証で拒否します。remote 障害時に `free` へ自動フォールバックせず、[`remote-v1` / `remote-one-shot-v1`](lambda/functions/faq-chat/adapters/remote/README.md) の入出力 DTO も未知フィールドを含めて検証します。
 - **限定された cross-account 認証:** remote 認証は指定した role への `sts:AssumeRole` に限定し、caller role に直接の `execute-api:Invoke` を付与しません。取得した一時 credential で Remote RAG API へのリクエストを SigV4 署名します。
 - **再現可能な検証:** [CI](.github/workflows/ci.yml) で TypeScript 型検査、契約・異常系・権限境界のテスト、SAM template lint を実行します。モック評価は合成データだけを使い、ネットワークへ接続しません。
 
@@ -119,7 +119,7 @@ npm run eval:mock
 - handler 内の smalltalk 分岐は正本との互換性のため残っています。free profile の既定は `template_only` で、`smalltalkMode=generated` は `ANTHROPIC_API_KEY` を持つ環境でのみ opt-in できます。
 - 同梱データは架空のサンプルです。非公開の評価質問、会話、結果、顧客データは含みません。
 - Q&A は接触先らしき文字列をマスクして `FaqQaLogs` に保存し、SAM parameter `FaqQaLogRetentionDays`（既定180日）に従う `ttl` を設定します。DynamoDB TTL の削除時刻は厳密ではありません。
-- Q&A ログの Streams consumer と恒久アーカイブはこの alpha 版に含みません。テンプレートも Streams を有効化しません。任意の Slack 通知は、保存成功後に FAQ Lambda から直接送ります。
+- Q&A の恒久アーカイブは含みません。任意の Slack 通知は既定では保存成功後に FAQ Lambda から直接送り、`FaqQaNotifyAsyncEnabled=true` で専用 Streams worker へ切り替えられます。
 - ファイルアップロード、認証、管理画面、監視、WAF、独自ドメイン、バックアップは含みません。
 - Docker Desktop の業務利用条件は組織規模等で異なります。所属組織で確認し、必要なら Docker Engine を利用してください。
 
@@ -150,13 +150,31 @@ sam deploy \
 
 ### FAQ Q&A の Slack 通知（任意）
 
-SAM parameter `FaqQaNotifyWebhookUrl` に Slack Incoming Webhook URL を秘密管理されたデプロイ入力から渡すと、Q&A ログの DynamoDB 保存成功後に通知します。受理するのは標準の `https://hooks.slack.com/services/{workspace}/{channel}/{secret}` 形式（3つの path segment は ASCII 英数字のみ）です。userinfo、独自 port、query、fragment、segment の不足・追加を含む URL は固定 warn を残して送信せず、HTTP redirect も追従しません。未指定（既定の空文字）では fetch もログも発生せず、既存挙動のままです。この機能は下記 Slack bot の有効化条件や資格情報とは独立しています。DynamoDB の Q&A ログが正本であり、Slack 通知は配送保証のない best-effort の補助経路です。
+SAM parameter `FaqQaNotifyWebhookUrl` に Slack Incoming Webhook URL を秘密管理されたデプロイ入力から渡すと、Q&A ログの DynamoDB 保存成功後に通知します。受理するのは標準の `https://hooks.slack.com/services/{workspace}/{channel}/{secret}` 形式（3つの path segment は ASCII 英数字のみ）です。userinfo、独自 port、query、fragment、segment の不足・追加を含む URL は固定 warn を残して送信せず、HTTP redirect も追従しません。未指定（既定の空文字）では通知fetchは発生しません。この機能は下記 Slack bot の有効化条件や資格情報とは独立しています。DynamoDB の Q&A ログが正本であり、Slack 通知は補助経路です。`FaqQaNotifyAsyncEnabled=false`（既定）では従来の同期best-effort配送を維持し、`true` では保存した行を専用workerが再試行付きで配送します。
 
-通知には、保存済みレコードと同じ接触先マスク・NFKC 正規化済みの質問と回答の冒頭、`responseType`、`route`、`totalMs` などを含めます。Webhook POST は呼び出し元の残余予算に従い最長2秒で打ち切ります。HTTPエラー・通信失敗・タイムアウトは Lambda の warn ログに残し、FAQ の応答を失敗させません。URL は `samconfig.toml`、shell history、CI log、公開コードへ保存せず、secret 管理された CI/CD 入力などから渡してください。
+通知には、保存済みレコードと同じ接触先マスク・NFKC 正規化済みの質問と回答の冒頭、`responseType`、`route`、`totalMs` などを含めます。同期経路の Webhook POST は FAQ 応答前に待機し、呼び出し元の残余予算に従い最長2秒で打ち切ります。非同期 stream worker の POST は最長10秒で、Lambda の `Timeout=15` 秒の内側で実行します。claim 完了後に Lambda の残余時間から `store.complete()` 用の予備 `COMPLETE_RESERVE_MS=2,000` ms を引き、`min(10,000 ms, 残余時間 - 2,000 ms)` を送信予算にします。予算が非正値なら送信せず再試行対象とし、テスト等で Lambda context がない場合だけ固定10秒を使います。HTTPエラー・通信失敗・タイムアウトは Lambda の warn ログに残し、FAQ の応答を失敗させません。URL は `samconfig.toml`、shell history、CI log、公開コードへ保存せず、secret 管理された CI/CD 入力などから渡してください。
 
-Slack Incoming Webhook の持続的な送信目安は通知先1チャンネルあたり約1件/秒です。この直接通知経路は FAQ 応答を遅らせないため、同期リトライや DLQ への退避を行いません。Slack が HTTP 429 を返した通知は warn を残して破棄します。高頻度の利用や配送保証が必要な場合は、DynamoDB Streams + SQS などのキュー付き consumer へ移行し、利用者の応答経路と分離してください。
+既定の直接通知経路は同期リトライや DLQ への退避を行いません。Slack が HTTP 429 を返した通知は warn を残して破棄します。応答前のSlack待機を除く場合は、次の非同期配送を有効にしてください。非同期workerもレート制御専用queueではないため、大量通知や429が続く場合は通知量と再試行・DLQを監視します。
 
 運用時は Lambda の CloudWatch Logs で安定 prefix `[faq-chat] Q&A Slack notification` を検索し、`failed`、`timed out`、`rate limited`、`skipped` の warn を対象に metric filter と alarm を設定してください。`started` は有効な正の送信予算で実際に送信を開始する直前、`completed` は成功時だけ記録されます。非正値の予算では fetch を開始せず、handler が通知前に予算切れを検知した場合は `budget`、`remaining`、`route`（named agent では `agentId` も）、adapter の防御で検知した場合は `budgetMs=0`、元の `requestedMs`、`reason=non_positive_budget` を持つ `skipped` だけを記録します。どちらも `started` / `completed` は発生しません。`started` があり `completed` がない試行も調査対象です。通知漏れの確認と再処理は Slack 履歴ではなく DynamoDB の Q&A ログを基準に行ってください。
+
+#### Streams による非同期通知の配備・確認・rollback
+
+`FaqQaNotifyAsyncEnabled` はデプロイ時だけ設定できる `true` / `false`（既定）のパラメータで、shell の `FAQ_QA_NOTIFY_ASYNC_ENABLED` へ反映されます。`true` の場合もQA Putは従来の短い予算内で待ちます。通知所有者を同じ行に `qaNotifyDelivery=async-v1` として保存するため、Put失敗で行が作られなければ通知も発生しません。同期行は `sync-v1`、通知未設定行は `disabled` となり、workerが同期通知を重ねて送ることはありません。Put待機のtimeoutは書込み失敗の確定ではなく、後でPutが成功すれば通知される場合があります。
+
+1. レビュー済み公開revisionを利用者側cloneへ取り込み、既存のstack手順でまず `FaqQaNotifyAsyncEnabled=false` のまま配備します。新templateは `NEW_IMAGE` Streams、INSERTかつ `async-v1` のfilter、最小worker、専用IAM role、14日保持のSQS DLQとalarmを常設します。既存接続先・transport・保持日数・秘密入力を維持してください。
+2. `FaqQaNotifyFunctionName` / `FaqQaNotifyDLQUrl` / `FaqQaNotifyDLQAlarmName` のstack出力を確認し、event source mappingがEnabled、filterと `ReportBatchItemFailures` が設定済みであることを確認します。DLQ alarmの通知先は運用担当者が設定してください。worker失敗、IteratorAge、DestinationDeliveryFailuresも監視対象です。
+3. Webhook設定を保持して `FaqQaNotifyAsyncEnabled=true` で更新し、shell環境変数を読み戻します。別途承認された合成データの動作確認で、QA行の `qaNotifyDelivery=async-v1`、配送後の `qaNotifyStatus=sent`、Slack1件、shellの `qa_notify_outcome=skipped` とworker成功ログを照合します。本文・連絡先・認証値を計測ログに出さず、QA失敗・重複再配信・一時失敗とDLQ経路も検証環境で確認してください。
+4. workerは元QA行を条件付き更新で60秒leaseし、送信成功後に `sent` を記録します。完了済み行の再配信は送信を省略します。batchは1件、最大10回再試行またはレコード年齢1時間で打ち切り、SQS DLQへ退避します。Slack送信とDynamoDB完了記録は原子的に確定できないため、その間の停止や曖昧なHTTP結果では重複通知が残ります。exactly-once配送ではありません。
+5. **rollback は `FaqQaNotifyAsyncEnabled=false` で同じrevisionを再配備します。** 新しい行が同期に戻ったことを確認し、既存 `async-v1` 行はworkerに処理させます。滞留中はworker・Streams・Webhookを削除しないでください。古いtemplateへの巻戻しはconsumerを消す可能性があるため、未完了行・IteratorAge・DLQが解消するまで行いません。
+
+Streamsの保持は24時間で、SQS失敗宛先には通常、元レコード全体ではなくstream/shard/sequence等の失敗batch情報が入ります。DLQメッセージをそのままworkerへ渡すことはできません。保持期間内はそのsequenceから元INSERTを取得し、期間後は権限保持者がQA表の未完了 `async-v1` 行（`qaNotifySequenceNumber` も照合）から元キーを特定して、`INSERT` / `Keys` / `NewImage.qaNotifyDelivery` / `SequenceNumber` を持つイベントを再構成します。原因を修正し、lease失効と `sent` 未設定を確認して同じworkerで再処理し、`sent` を確認してからDLQを削除します。キーを確定できないものを推測で再送しないでください。QA表のTTLや手動削除で元行がなくなると復旧できないため、調査中の保持方針を決めてください。
+
+`timeout` 起因の復旧では、worker の `started` ログの `timeoutMs` と `timed out`、Lambda の `Task timed out` を照合します。worker の送信上限は同期経路の2秒ではなく、claim 後の残余時間に連動する最長10秒です。claim が遅い場合は送信予算が短くなるため、Slack の応答だけでなく DynamoDB の claim / complete の遅延も確認してください。2秒の完了記録予備は `store.complete()` の成功を保証するものではありません。Lambda が送信後・完了記録前に停止した可能性があれば、上記の lease と `sent` を確認し、再処理による重複通知の可能性を扱ってください。
+
+workerの固定ログ `faq_qa_notify_worker outcome=success|duplicate|failure` とDLQを照合します。公開workerは通知だけを担当し、恒久アーカイブ・非公開RAG・prompt・KBへのアクセスはありません。計測フィールドの定義は[公開shell telemetry](lambda/functions/faq-chat/adapters/remote/README.md#terminal-shell-timing-fields)を参照してください。
+
+既存の応答メトリクス `faq_chat` は応答確定時点で出力し、shell の終端計測は別の `faq_shell_timing` 行として同じ request ID で関連付けます。メトリクスフィルタは部分文字列検索ではなく `{ $.metric = "faq_chat" }` の完全一致を使ってください。Lambda のハードタイムアウトでは終端行が出ない場合があります。
 
 ### Slack bot（フリー版）
 
@@ -227,9 +245,22 @@ aws cloudformation describe-stacks \
 | SAM parameter | free/bootstrap | remote 更新時 | 内容 |
 | --- | --- | --- | --- |
 | `FaqPortsProfile` | `free` | `remote` | RAG 実装の選択。公開 lite ではこの2値だけを受け付けます。 |
+| `FaqRemoteRagTransport` | `split-v1`（既定） | `split-v1`（既定）または `one-shot-v1` | remote の HTTP 契約。one-shot は `POST /v1/answer` を1回だけ呼びます。 |
 | `FaqRemoteRagBaseUrl` | 空 | 必須 | MIF Remote RAG API の HTTPS Base URL。operation suffix は含めません。 |
 | `FaqRemoteRagRoleArn` | 空 | 必須 | MIF が提示した cross-account invoker role の完全な IAM role ARN。 |
 | `FaqRemoteRagExternalId` | 空 | 必須 | MIF trust policy と一致する tenant 固有 ExternalId。2〜1224文字の STS 許可文字だけを受け付け、CloudFormation では `NoEcho` です。 |
+
+transport はデプロイ時の `FaqRemoteRagTransport` → `FAQ_REMOTE_RAG_TRANSPORT` だけで選択し、`FAQ_PORTS_PROFILE=remote` のときだけ読みます。Settings やリクエストからは変更できません。既定の `split-v1` を維持し、one-shot は MIF 側の有効化と品質・性能評価が完了してから opt-in します。ロールバックは `FaqRemoteRagTransport=split-v1` での再デプロイです。
+
+### 既存利用者の one-shot 切替手順
+
+1. 正本から公開同期され、レビュー済みの公開 revision を clone 側へ取り込みます。`PUBLIC_SYNC_MANIFEST.json` の source ref / SHA と、`remote-one-shot-v1` client、`FaqRemoteRagTransport` を含む template の対応を確認し、切替前の revision と `split-v1` 設定を記録します。コードがあるだけでは本番切替の承認にはなりません。
+2. MIF 担当者に、その tenant の `enabled=true` / `answerEnabled=true`、global gate、exact tenant role mapping、MIF 所有 invoker role の exact `api/POST/v1/answer` への `execute-api:Invoke` を確認してもらいます。caller の exact role への AssumeRole 許可と MIF 側 trust / ExternalId の一致も必要です。gate は最大60秒の cache 反映待ちがあり、MIF 側の現在値や認証値は公開文書に記録しません。
+3. 品質・性能評価と運用承認の後、利用者側の権限保持者が既存 faq-lite の配備手順で `FaqPortsProfile=remote` を維持し、`FaqRemoteRagTransport=one-shot-v1` を指定して再配備します。既存の接続先・role・秘密入力・通知設定を保持し、実環境の `FAQ_REMOTE_RAG_TRANSPORT` を読み戻します。
+4. 別途承認された動作確認で `remote_transport=one-shot-v1`、`remote_operation=answer`、`remote_http_calls=1` と、shell / MIF の request ID の対応を確認します。401/403、429/503、timeout、未対応route、品質悪化があれば切替を停止し、本文を含まない件数・終端余裕を保存します。ローカル単体テストだけで性能改善を判断しません。
+5. **rollback は caller を `FaqRemoteRagTransport=split-v1` に戻して再配備する操作です。** 環境変数と新しい shell metric を読み戻し、通常の検索回答では retrieve / generate に戻ったことを確認します。MIF の `answerEnabled=false` だけでは one-shot caller が拒否を続けるため不十分です。caller 切戻しと処理中要求の完了後、必要なら MIF 担当者が answer gate を閉じます。処理中 answer の split 再送や自動 fallback は行いません。
+
+one-shot は HTTP retry を行わず、timeout・network error・401/403・429・5xx や未対応 route でも split/free にフォールバックしません。契約に一致する `no_match` の404は通常の検索不一致として扱い、それ以外の404/501は `remote_transport_unsupported` の技術的拒否として記録します。MIF invoker role には exact `/api/POST/v1/answer` の実行権限が必要で、lite caller role は引き続き exact role への `sts:AssumeRole` のみです。
 
 **lite 殻と MIF Remote RAG API は同一 AWS region に配置してください。** Base URL、role ARN、ExternalId のいずれかが欠けた `remote` 更新は CloudFormation Rules が拒否します。Role ARN と ExternalId の片方だけを設定することもできません。
 

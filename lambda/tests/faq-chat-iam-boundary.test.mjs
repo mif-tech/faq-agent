@@ -88,6 +88,21 @@ const dataContracts = [
 ];
 
 for (const contract of contracts) {
+  test(`${contract.label}: remote transport is deployment-only and defaults to split-v1`, () => {
+    const parameter = resourceBlock(contract.source, 'FaqRemoteRagTransport');
+    assert.match(parameter, /Type: String/u);
+    assert.match(parameter, /Default: split-v1/u);
+    assert.match(parameter, /AllowedValues:\r?\n\s+- split-v1\r?\n\s+- one-shot-v1/u);
+    assert.deepEqual(
+      [...parameter.matchAll(/^\s+- ([a-z0-9-]+)\s*$/gmu)].map((match) => match[1]),
+      ['split-v1', 'one-shot-v1']
+    );
+    assert.match(
+      resourceBlock(contract.source, 'FaqChatFunction'),
+      /FAQ_REMOTE_RAG_TRANSPORT: !Ref FaqRemoteRagTransport/u
+    );
+  });
+
   test(`${contract.label}: faq-chat IAM is limited to exact data and remote-auth actions`, () => {
     const code = policyCode(contract.source);
     const expectedActions = [
@@ -145,6 +160,7 @@ for (const contract of contracts) {
         ),
       ].map((match) => match[1]);
       assert.deepEqual(directInvokeResources.sort(), [
+        'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRemoteRagApiId}/api/POST/v1/answer',
         'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRemoteRagApiId}/api/POST/v1/generate',
         'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRemoteRagApiId}/api/POST/v1/retrieve',
       ]);

@@ -1,0 +1,16 @@
+{
+  "request": "{\"contractVersion\":\"remote-one-shot-v1\",\"idempotencyKey\":\"synthetic-call-001\",\"currentQuestion\":\"What are your opening hours?\",\"messages\":[{\"role\":\"user\",\"content\":\"What are your opening hours?\"}],\"remainingMs\":20000,\"hints\":{\"lexicalTerms\":[\"hours\"],\"semanticQueries\":[\"opening hours\"]}}",
+  "responses": [
+    { "statusCode": 200, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":true,\"response\":{\"answer\":\"We are open from nine to five.\",\"answerable\":true,\"sources\":[{\"entryId\":\"business-hours\",\"topic\":\"Opening hours\",\"url\":\"https://example.com/hours\"}],\"responseType\":\"kb_answer\"}}" },
+    { "statusCode": 200, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":true,\"response\":{\"answer\":\"Please contact our support team.\",\"answerable\":false,\"sources\":[],\"responseType\":\"refuse\"}}" },
+    { "statusCode": 200, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":true,\"response\":{\"answer\":\"Please ask about our services.\",\"answerable\":false,\"sources\":[],\"responseType\":\"refuse\",\"scopeFallback\":true}}" },
+    { "statusCode": 200, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":true,\"response\":{\"answer\":\"Please try again later.\",\"answerable\":false,\"sources\":[],\"responseType\":\"refuse\",\"failureKind\":\"envelope_invalid\",\"retryable\":true}}" },
+    { "statusCode": 404, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"no_match\",\"retryable\":false}}" },
+    { "statusCode": 400, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"invalid_contract\",\"retryable\":false}}" },
+    { "statusCode": 429, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"quota_exceeded\",\"retryable\":true,\"retryAfterMs\":1000}}" },
+    { "statusCode": 503, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"kill_switch\",\"retryable\":true}}" },
+    { "statusCode": 504, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"deadline_exceeded\",\"retryable\":true}}" },
+    { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"retrieval_failed\",\"retryable\":true}}" },
+    { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"generation_failed\",\"retryable\":true}}" }
+  ]
+}

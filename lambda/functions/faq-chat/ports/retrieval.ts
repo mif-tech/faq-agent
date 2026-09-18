@@ -9,6 +9,7 @@ export type FaqRetrievalTraceRejectionReason =
   | 'char_budget'
   | 'per_entry_cap'
   | 'anchor_fail'
+  | 'near_duplicate'
   | 'unknown';
 
 export interface FaqRetrievalMetricCandidateTrace {
