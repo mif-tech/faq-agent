@@ -57,6 +57,12 @@ async function loadNotifier() {
     target: 'node22',
     outfile: bundlePath,
     logLevel: 'silent',
+    plugins: [{ name: 'notification-timing', setup(esbuild) {
+      esbuild.onResolve({ filter: /shell-timing\.js$/ }, () => ({ path: 'timing', namespace: 'test' }));
+      esbuild.onLoad({ filter: /^timing$/, namespace: 'test' }, () => ({
+        contents: 'export function recordFaqQaNotifyOutcome() {}', loader: 'js',
+      }));
+    } }],
   });
   return import(`${pathToFileURL(bundlePath).href}?v=${Date.now()}`);
 }
@@ -79,7 +85,9 @@ async function withRuntime(
   else process.env.FAQ_QA_NOTIFY_WEBHOOK_URL = webhookUrl;
   globalThis.fetch = fetchImpl;
   AbortSignal.timeout = timeoutImpl;
-  console.warn = (...args) => warnings.push(args.map(String).join(' '));
+  console.warn = (...args) => warnings.push(args.map((arg) =>
+    typeof arg === 'object' && arg !== null ? JSON.stringify(arg) : String(arg)
+  ).join(' '));
   console.info = (...args) => infos.push(args.map(String).join(' '));
 
   try {
@@ -214,7 +222,7 @@ test('rendering preserves emoji boundaries and never slices an mrkdwn entity', (
 test('webhook HTTP and transport failures warn without rejecting or leaking content', async () => {
   const secretError = Object.assign(
     new Error(`failed to fetch ${WEBHOOK_URL}?question=${record.question}`),
-    { name: 'TypeError' }
+    { name: 'NetworkError' }
   );
   const outcomes = [
     { ok: false, status: 503 },
@@ -237,7 +245,7 @@ test('webhook HTTP and transport failures warn without rejecting or leaking cont
       await assert.doesNotReject(notifier.notifyFaqQaLog(record));
       assert.equal(warnings.length, 2);
       assert.match(warnings[0], /failed: HTTP 503/u);
-      assert.match(warnings[1], /failed \(TypeError\)/u);
+      assert.equal(warnings[1], `${LOG_PREFIX} failed {"errorName":"NetworkError"}`);
       assert.equal(infos.length, 2);
       assert.equal(infos.every((info) => info.startsWith(`${LOG_PREFIX} started`)), true);
       for (const message of [...warnings, ...infos]) {
@@ -312,30 +320,45 @@ test('webhook timeout abort is warn-only and reports the actual caller budget', 
   assert.equal(timeoutCalls, 1);
 });
 
-test('caller timeout is honored below the maximum and capped at two seconds', async () => {
-  const timeoutCalls = [];
-  await withRuntime(
-    {
-      webhookUrl: WEBHOOK_URL,
-      timeoutImpl(timeoutMs) {
-        timeoutCalls.push(timeoutMs);
-        return new AbortController().signal;
+for (const { retryOwner, maximumMs, label } of [
+  { retryOwner: 'none', maximumMs: 2_000, label: 'synchronous' },
+  { retryOwner: 'stream', maximumMs: 10_000, label: 'stream worker' },
+]) {
+  test(`${label} delivery uses its own timeout default and cap`, async () => {
+    const timeoutCalls = [];
+    const cases = [
+      { requestedMs: undefined, expectedMs: maximumMs },
+      { requestedMs: 250, expectedMs: 250 },
+      { requestedMs: 5_000, expectedMs: retryOwner === 'stream' ? 5_000 : 2_000 },
+      { requestedMs: 20_000, expectedMs: maximumMs },
+      { requestedMs: Number.NaN, expectedMs: maximumMs },
+      { requestedMs: Number.POSITIVE_INFINITY, expectedMs: maximumMs },
+    ];
+    await withRuntime(
+      {
+        webhookUrl: WEBHOOK_URL,
+        timeoutImpl(timeoutMs) {
+          timeoutCalls.push(timeoutMs);
+          return new AbortController().signal;
+        },
+        async fetchImpl() {
+          return { ok: true, status: 200 };
+        },
       },
-      async fetchImpl() {
-        return { ok: true, status: 200 };
-      },
-    },
-    async ({ warnings, infos }) => {
-      await notifier.notifyFaqQaLog(record, 250);
-      await notifier.notifyFaqQaLog(record, 20_000);
-      assert.deepEqual(warnings, []);
-      assert.equal(infos.length, 4);
-      assert.match(infos[0], /timeoutMs=250/u);
-      assert.match(infos[2], /timeoutMs=2000/u);
-    }
-  );
-  assert.deepEqual(timeoutCalls, [250, 2_000]);
-});
+      async ({ warnings, infos }) => {
+        for (const { requestedMs } of cases) {
+          assert.equal(await notifier.notifyFaqQaLog(record, requestedMs, retryOwner), 'success');
+        }
+        assert.deepEqual(warnings, []);
+        assert.deepEqual(infos, cases.flatMap(({ expectedMs }) => [
+          `${LOG_PREFIX} started (qaLogTs=${record.ts}, timeoutMs=${expectedMs})`,
+          `${LOG_PREFIX} completed (qaLogTs=${record.ts})`,
+        ]));
+      }
+    );
+    assert.deepEqual(timeoutCalls, cases.map(({ expectedMs }) => expectedMs));
+  });
+}
 
 test('non-positive timeout budget skips before payload rendering, timeout creation, fetch, or start trace', async () => {
   let fetchCalls = 0;
@@ -441,4 +464,15 @@ test('unset webhook environment is a complete no-op', async () => {
 
   assert.equal(fetchCalls, 0);
   assert.equal(timeoutCalls, 0);
+});
+
+test('worker delivery returns failure on HTTP 429 and delegates retry without a false drop trace', async () => {
+  await withRuntime({
+    webhookUrl: WEBHOOK_URL,
+    timeoutImpl: () => new AbortController().signal,
+    fetchImpl: async () => ({ ok: false, status: 429, headers: { get: () => null } }),
+  }, async ({ warnings }) => {
+    assert.equal(await notifier.notifyFaqQaLog(record, 2_000, 'stream'), 'failure');
+    assert.deepEqual(warnings, [`${LOG_PREFIX} rate limited: HTTP 429, retry delegated to stream`]);
+  });
 });

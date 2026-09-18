@@ -1,6 +1,15 @@
 import type { FaqQaLogRecord } from '../ports/storage.js';
+import { recordFaqQaNotifyOutcome } from '../shell-timing.js';
+
+export type FaqQaNotifyOutcome = 'success' | 'disabled' | 'skipped' | 'timeout' | 'failure';
+
+function outcome(value: FaqQaNotifyOutcome): FaqQaNotifyOutcome {
+  recordFaqQaNotifyOutcome(value);
+  return value;
+}
 
 export const FAQ_QA_NOTIFY_TIMEOUT_MS = 2_000;
+export const STREAM_NOTIFY_TIMEOUT_MS = 10_000;
 
 const NOTIFY_QUESTION_MAX = 300;
 const NOTIFY_ANSWER_MAX = 700;
@@ -183,9 +192,14 @@ function errorName(error: unknown): string {
   return 'unknown error';
 }
 
-function effectiveTimeoutMs(timeoutMs: number): number {
-  if (!Number.isFinite(timeoutMs)) return FAQ_QA_NOTIFY_TIMEOUT_MS;
-  return Math.max(0, Math.min(FAQ_QA_NOTIFY_TIMEOUT_MS, Math.trunc(timeoutMs)));
+function effectiveTimeoutMs(
+  timeoutMs: number | undefined,
+  retryOwner: 'none' | 'stream'
+): number {
+  // Stream delivery runs outside the FAQ response and has a 15-second Lambda timeout.
+  const maximumMs = retryOwner === 'stream' ? STREAM_NOTIFY_TIMEOUT_MS : FAQ_QA_NOTIFY_TIMEOUT_MS;
+  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) return maximumMs;
+  return Math.max(0, Math.min(maximumMs, Math.trunc(timeoutMs)));
 }
 
 function sanitizedRetryAfter(response: Response): string | null {
@@ -202,23 +216,24 @@ function sanitizedRetryAfter(response: Response): string | null {
  */
 export async function notifyFaqQaLog(
   record: FaqQaLogRecord,
-  timeoutMs = FAQ_QA_NOTIFY_TIMEOUT_MS
-): Promise<void> {
+  timeoutMs?: number,
+  retryOwner: 'none' | 'stream' = 'none'
+): Promise<FaqQaNotifyOutcome> {
   const webhookUrl = process.env.FAQ_QA_NOTIFY_WEBHOOK_URL?.trim();
-  if (!webhookUrl) return;
+  if (!webhookUrl) return outcome('disabled');
 
   if (!isSlackIncomingWebhookUrl(webhookUrl)) {
     console.warn(`${LOG_PREFIX} failed: invalid webhook URL`);
-    return;
+    return outcome('failure');
   }
 
-  const budgetMs = effectiveTimeoutMs(timeoutMs);
+  const budgetMs = effectiveTimeoutMs(timeoutMs, retryOwner);
   if (budgetMs <= 0) {
     console.warn(
       `${LOG_PREFIX} skipped (qaLogTs=${record.ts}, budgetMs=${budgetMs}, ` +
         `requestedMs=${timeoutMs}, reason=non_positive_budget)`
     );
-    return;
+    return outcome('skipped');
   }
   console.info(`${LOG_PREFIX} started (qaLogTs=${record.ts}, timeoutMs=${budgetMs})`);
 
@@ -232,24 +247,27 @@ export async function notifyFaqQaLog(
     });
     if (response.ok) {
       console.info(`${LOG_PREFIX} completed (qaLogTs=${record.ts})`);
-      return;
+      return outcome('success');
     }
     if (response.status === 429) {
       const retryAfter = sanitizedRetryAfter(response);
       console.warn(
-        `${LOG_PREFIX} rate limited: HTTP 429, dropped without retry` +
+        `${LOG_PREFIX} rate limited: HTTP 429, ` +
+          (retryOwner === 'stream' ? 'retry delegated to stream' : 'dropped without retry') +
           (retryAfter ? ` (retryAfter=${retryAfter}s)` : '')
       );
-      return;
+      return outcome('failure');
     }
     console.warn(`${LOG_PREFIX} failed: HTTP ${response.status}`);
+    return outcome('failure');
   } catch (error) {
     const name = errorName(error);
     if (name === 'TimeoutError' || name === 'AbortError') {
       console.warn(`${LOG_PREFIX} timed out (>${budgetMs}ms)`);
-      return;
+      return outcome('timeout');
     }
     // Do not log the error message: malformed fetch errors can contain the secret URL.
-    console.warn(`${LOG_PREFIX} failed (${name})`);
+    console.warn(`${LOG_PREFIX} failed`, { errorName: name });
+    return outcome('failure');
   }
 }

@@ -52,15 +52,30 @@ import type {
   FaqQaLogRecord,
 } from './ports/storage.js';
 import { boundPlanTexts } from '../../shared/public/search-plan-bounds.js';
+import {
+  emitFaqChatMetric,
+  finalizeFaqQaNotifyOutcome,
+  recordFaqGenerateBudget,
+  recordFaqHandlerOutcome,
+  recordFaqQaNotifyOutcome,
+  recordFaqQaWriteOutcome,
+  recordFaqShellDuration,
+  runFaqShellTiming,
+  type FaqTimingOutcome,
+} from './shell-timing.js';
 import { REMOTE_V1_GENERATE_BUDGET_FLOOR_MS, REMOTE_V1_LIMITS } from './adapters/remote/contract.js';
 import {
   FAQ_RAG_CONTRACT_VERSION,
   type FaqRagError,
+  type FaqRagCallContext,
+  type FaqRagHttpObservation,
   type FaqRagGenerateResponse,
-  type FaqRagPort,
   type FaqRagPublicResponse,
   type FaqRagRetrieveResponse,
 } from './ports/rag.js';
+import type { RemoteFaqTransport } from './ports/remote-transport.js';
+import type { FaqRagAnswerResult } from './ports/answer.js';
+import { FAQ_RAG_ANSWER_CONTRACT_VERSION } from './adapters/remote/answer-contract.js';
 
 // サーバー側の履歴ガード既定値（Settings で調整可・上限はハードキャップ）
 const DEFAULT_MAX_HISTORY = 6;
@@ -546,7 +561,26 @@ const SMALLTALK_JUDGE_SYSTEM_PROMPT = [
 
 const corsOrigin = process.env.FAQ_CORS_ORIGIN || '*';
 
+/** Preserve failure classification without logging messages, stacks, or SDK payloads. */
+function errorLogFields(error: unknown): { error_name: string; http_status_code: number | null } {
+  const failure = typeof error === 'object' && error !== null
+    ? error as { name?: unknown; $metadata?: { httpStatusCode?: unknown } } : undefined;
+  const status = failure?.$metadata?.httpStatusCode;
+  return {
+    error_name: typeof failure?.name === 'string' ? failure.name : 'Error',
+    http_status_code: typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status : null,
+  };
+}
+
 function jsonResponse(statusCode: number, body: unknown): APIGatewayProxyResultV2 {
+  const serializeStartedAt = Date.now();
+  let serializedBody: string;
+  try {
+    serializedBody = JSON.stringify(body);
+  } finally {
+    recordFaqShellDuration('response_serialize_ms', Date.now() - serializeStartedAt);
+  }
   return {
     statusCode,
     headers: {
@@ -557,7 +591,7 @@ function jsonResponse(statusCode: number, body: unknown): APIGatewayProxyResultV
       // 公開チャット応答は中間キャッシュに残さない
       'Cache-Control': 'no-store',
     },
-    body: JSON.stringify(body),
+    body: serializedBody,
   };
 }
 
@@ -1051,6 +1085,7 @@ async function runGeneratedSmalltalkPipeline(
       }
     );
     telemetry.routerMs = Date.now() - routerStartedAt;
+    recordFaqShellDuration('router_ms', telemetry.routerMs);
     // ルーターのタイムアウト・APIエラー・スキーマ不正はKB経路へ倒す。固定文に倒すと
     // Haiku側の一過性障害だけで「料金プランを教えて」等の正当なFAQ質問まで潰れ、
     // FAQ機能全体の停止として表面化する（PRレビュー指摘）。KB経路は sources 必須の
@@ -1452,6 +1487,8 @@ async function logFaqQa(
   const sideEffectDeadlineAt = Date.now() + budgetMs;
   let record: FaqQaLogRecord;
   let timer: NodeJS.Timeout | undefined;
+  let writeStartedAt: number | undefined;
+  let writeOutcome: FaqTimingOutcome = 'failure';
   try {
     const now = new Date();
     const iso = now.toISOString();
@@ -1480,6 +1517,7 @@ async function logFaqQa(
     };
     const writeBudgetMs = Math.max(0, sideEffectDeadlineAt - Date.now());
     if (writeBudgetMs <= 0) {
+      writeOutcome = 'skipped';
       console.warn(
         `[faq-chat] qa log write skipped (${qaLogWarningContext(
           entry.route,
@@ -1489,6 +1527,7 @@ async function logFaqQa(
       );
       return;
     }
+    writeStartedAt = Date.now();
     const write = faqPorts.storage.putQaLog(record);
     // 応答直前の唯一の書込のため、DynamoDBの遅延・SDKリトライで利用者応答を道連れにしない
     // （codexレビュー指摘: 無期限awaitはLambda期限と競合し、200予定の応答が5xxになり得る）。
@@ -1500,6 +1539,7 @@ async function logFaqQa(
       }),
     ]);
     if (writeResult === 'timeout') {
+      writeOutcome = 'timeout';
       write.catch(() => {});
       console.warn(
         `[faq-chat] qa log write timed out (>${writeBudgetMs}ms, ${qaLogWarningContext(
@@ -1510,23 +1550,30 @@ async function logFaqQa(
       );
       return;
     }
-  } catch (e) {
+    writeOutcome = 'success';
+  } catch (error) {
     console.warn(
-      `[faq-chat] qa log write failed: ${(e as Error)?.message ?? e} (${qaLogWarningContext(
+      `[faq-chat] qa log write failed (${qaLogWarningContext(
         entry.route,
         remainingMs,
         namedAgentId
-      )})`
+      )})`,
+      errorLogFields(error)
     );
     return;
   } finally {
+    recordFaqQaWriteOutcome(writeOutcome);
+    if (writeStartedAt !== undefined) recordFaqShellDuration('qa_write_ms', Date.now() - writeStartedAt);
     // 書込が先に完了してもタイマーを残さない（凍結→次invocationでの無関係な発火と
     // イベントループ残留による課金水増しを防ぐ / PRレビュー指摘）
     if (timer !== undefined) clearTimeout(timer);
   }
 
   const notifyQaLog = faqPorts.storage.notifyQaLog;
-  if (notifyQaLog === undefined) return;
+  if (notifyQaLog === undefined) {
+    recordFaqQaNotifyOutcome('disabled');
+    return;
+  }
 
   const notifyRemainingMs = context?.getRemainingTimeInMillis?.();
   const notifyBudgetMs = Math.floor(
@@ -1545,11 +1592,28 @@ async function logFaqQa(
     return;
   }
 
+  const notifyStartedAt = Date.now();
+  let notifyTimer: NodeJS.Timeout | undefined;
+  let notifyOutcome: 'success' | 'timeout' | 'failure' = 'failure';
   try {
-    await notifyQaLog.call(faqPorts.storage, record, notifyBudgetMs);
+    const notification = notifyQaLog.call(faqPorts.storage, record, notifyBudgetMs);
+    const result = await Promise.race([
+      notification.then(() => 'completed' as const),
+      new Promise<'timeout'>((resolve) => {
+        notifyTimer = setTimeout(() => resolve('timeout'), notifyBudgetMs);
+      }),
+    ]);
+    notifyOutcome = result === 'timeout' ? 'timeout' : 'success';
+    if (result === 'timeout') {
+      console.warn('[faq-chat] Q&A Slack notification timed out');
+    }
   } catch {
     // Notification errors can contain the secret webhook URL or Q&A text. Keep this stable.
     console.warn('[faq-chat] Q&A Slack notification failed');
+  } finally {
+    finalizeFaqQaNotifyOutcome(notifyOutcome);
+    if (notifyTimer !== undefined) clearTimeout(notifyTimer);
+    recordFaqShellDuration('qa_notify_ms', Date.now() - notifyStartedAt);
   }
 }
 
@@ -1607,7 +1671,7 @@ function boundRemoteRetrievalHints(
 }
 
 function remoteRagErrorResponse(
-  error: FaqRagError,
+  error: FaqRagError | { code: 'remote_transport_unsupported'; retryable: false },
   fallbackMessage: string
 ): { response: FaqRagPublicResponse; route: string } {
   switch (error.code) {
@@ -1639,6 +1703,7 @@ function remoteRagErrorResponse(
     case 'invalid_contract':
     case 'retrieval_failed':
     case 'generation_failed':
+    case 'remote_transport_unsupported':
       break;
     default: {
       const exhaustive: never = error;
@@ -1665,13 +1730,23 @@ async function handleFaqRequest(
   faqPorts: FaqPorts,
   event: APIGatewayProxyEventV2,
   context?: Context,
-  faqRagPort?: FaqRagPort,
-  namedAgentId?: string
+  remoteTransport?: RemoteFaqTransport,
+  namedAgentId?: string,
+  invocation?: FaqInvocationObservation
 ): Promise<APIGatewayProxyResultV2> {
-  // named経路だけ構造化ログにagent_idを足す（default経路のログ行はフィールド構成ごと不変に保ち、
-  // 既存のメトリクスフィルタ・Logs Insightsクエリを壊さない）。
-  const agentMetricFields =
-    namedAgentId === undefined ? {} : { agent_id: namedAgentId };
+  // IDs join runner HTTP observations to shell and remote logs, never to body DTOs.
+  const agentMetricFields = {
+    ...(namedAgentId === undefined ? {} : { agent_id: namedAgentId }),
+    ...(invocation ? { requestId: invocation.requestId, coldStart: invocation.coldStart } : {}),
+    // Semantic shell routes can finish before remote I/O (templates or safety
+    // refusals). Zero calls is explicit evidence, distinct from a missing join.
+    ...(remoteTransport ? {
+      remote_transport: remoteTransport.kind,
+      remote_http_calls: 0,
+      remote_requests: [],
+      remote_ms: 0,
+    } : {}),
+  };
   const logFaqQaForRequest = (entry: FaqQaLogEntry) =>
     logFaqQa(faqPorts, context, entry, namedAgentId);
   const method = event.requestContext?.http?.method;
@@ -1707,16 +1782,27 @@ async function handleFaqRequest(
   const smalltalkInFlight: Promise<unknown>[] = [];
   const settleSmalltalkCalls = async () => {
     if (smalltalkInFlight.length > 0) {
-      await Promise.allSettled(smalltalkInFlight);
-      smalltalkInFlight.length = 0;
+      const settleStartedAt = Date.now();
+      try {
+        await Promise.allSettled(smalltalkInFlight);
+        smalltalkInFlight.length = 0;
+      } finally {
+        recordFaqShellDuration('smalltalk_settle_ms', Date.now() - settleStartedAt);
+      }
     }
   };
   try {
     const settingsStartedAt = Date.now();
-    const setting = await faqPorts.storage.loadSettings();
-    settingsMs = Date.now() - settingsStartedAt;
+    let setting: FaqChatSettings | null;
+    try {
+      setting = await faqPorts.storage.loadSettings();
+    } finally {
+      settingsMs = Date.now() - settingsStartedAt;
+      recordFaqShellDuration('settings_ms', settingsMs);
+    }
     // kill switch（厳密比較。未設定・不正値は無効側に倒す）
     if (setting?.enabled !== true) {
+      recordFaqHandlerOutcome('disabled');
       return jsonResponse(503, { error: 'FAQ chat is not available' });
     }
 
@@ -1766,8 +1852,7 @@ async function handleFaqRequest(
     const chatTemplate = findChatTemplate(sanitized.currentQuestion);
     if (chatTemplate) {
       const totalMs = Date.now() - startedAt;
-      console.log(
-        JSON.stringify({
+      emitFaqChatMetric({
           metric: 'faq_chat',
           ...agentMetricFields,
           model,
@@ -1797,8 +1882,7 @@ async function handleFaqRequest(
           answerable: true,
           source_count: 0,
           skipped_model_call: true,
-        })
-      );
+        });
       await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: chatTemplate.answer,
@@ -1854,8 +1938,7 @@ async function handleFaqRequest(
         await settleSmalltalkCalls();
         const totalMs = Date.now() - startedAt;
         if (smalltalk.action === 'chat') {
-          console.log(
-            JSON.stringify({
+          emitFaqChatMetric({
               metric: 'faq_chat',
               ...agentMetricFields,
               model: SMALLTALK_HAIKU_MODEL,
@@ -1879,8 +1962,7 @@ async function handleFaqRequest(
               answerable: true,
               source_count: 0,
               skipped_model_call: false,
-            })
-          );
+            });
           await logFaqQaForRequest({
             question: sanitized.currentQuestion,
             answer: smalltalk.answer,
@@ -1894,8 +1976,7 @@ async function handleFaqRequest(
             responseType: 'chat',
           });
         }
-        console.log(
-          JSON.stringify({
+        emitFaqChatMetric({
             metric: 'faq_chat',
             ...agentMetricFields,
             model: SMALLTALK_HAIKU_MODEL,
@@ -1915,8 +1996,7 @@ async function handleFaqRequest(
             answerable: false,
             source_count: 0,
             skipped_model_call: false,
-          })
-        );
+          });
         await logFaqQaForRequest({
           question: sanitized.currentQuestion,
           answer: fallbackMessage,
@@ -1933,9 +2013,28 @@ async function handleFaqRequest(
       serialSearchPlan = smalltalk.searchPlan;
     }
 
-    if (faqRagPort) {
+    if (remoteTransport) {
       let remoteRetrieveMs = 0;
       let remoteGenerateMs = 0;
+      let remoteAnswerMs = 0;
+      let remoteHttpCalls = 0;
+      const remoteRequests: FaqRagHttpObservation[] = [];
+      const callContext: FaqRagCallContext = {
+        onHttpRequest: () => { remoteHttpCalls += 1; },
+        onHttpResponse: (observation) => {
+          // The shipped clients have at most four HTTP calls. Keep the metric bounded
+          // even if an injected port misbehaves, and copy only allowlisted scalars.
+          if (remoteRequests.length >= 8 ||
+            !['retrieve', 'generate', 'answer'].includes(observation.operation) ||
+            !Number.isInteger(observation.status) || observation.status < 100 || observation.status > 599) return;
+          remoteRequests.push({
+            operation: observation.operation,
+            status: observation.status,
+            ...(typeof observation.requestId === 'string' && /^[A-Za-z0-9_+=./:-]{1,128}$/.test(observation.requestId)
+              ? { requestId: observation.requestId } : {}),
+          });
+        },
+      };
       // ローカル経路の kb_plan_* に対応する観測。有界化で「plan 全滅」と「plan なし」が
       // 同じ hints 省略に潰れるため、件数だけメトリクスへ残す（語そのものは非ログ）
       const boundedPlan =
@@ -1945,39 +2044,47 @@ async function handleFaqRequest(
       const respondFromRemote = async (
         response: FaqRagPublicResponse,
         route: string,
-        operation: 'retrieve' | 'generate' | 'complete',
-        errorCode: FaqRagError['code'] | null
+        operation: 'retrieve' | 'generate' | 'complete' | 'answer',
+        errorCode: FaqRagError['code'] | 'remote_transport_unsupported' | null
       ) => {
         await settleSmalltalkCalls();
+        recordFaqGenerateBudget({
+          generate_end_reason: operation === 'retrieve' ? 'skipped' : errorCode === null ? 'success'
+            : errorCode === 'deadline_exceeded' ? 'timeout'
+              : errorCode === 'no_match' ? 'no_match'
+                : errorCode === 'kill_switch' ? 'disabled' : 'failure',
+        });
         const totalMs = Date.now() - startedAt;
-        console.log(
-          JSON.stringify({
+        emitFaqChatMetric({
             metric: 'faq_chat',
             ...agentMetricFields,
             model: null,
             route,
             response_source: 'remote',
-            remote_contract_version: FAQ_RAG_CONTRACT_VERSION,
+            remote_transport: remoteTransport.kind,
+            remote_contract_version: remoteTransport.kind === 'one-shot-v1'
+              ? FAQ_RAG_ANSWER_CONTRACT_VERSION : FAQ_RAG_CONTRACT_VERSION,
             remote_operation: operation,
+            remote_http_calls: remoteHttpCalls,
+            remote_requests: remoteRequests,
+            remote_ms: remoteRetrieveMs + remoteGenerateMs + remoteAnswerMs,
             remote_error_code: errorCode,
             remote_plan_dropped: boundedPlan?.droppedCount ?? 0,
             remote_plan_raw_count: boundedPlan?.rawCount ?? 0,
             structured_output_used: false,
             structured_output_fallback: false,
-            input_tokens: 0,
-            output_tokens: 0,
+            token_usage_source: 'remote_unavailable',
             latency_ms: totalMs,
             settings_ms: settingsMs,
-            kb_retrieval_ms: remoteRetrieveMs,
-            model_ms: remoteGenerateMs,
+            ...(remoteTransport.kind === 'split-v1'
+              ? { kb_retrieval_ms: remoteRetrieveMs, model_ms: remoteGenerateMs } : {}),
             ...smalltalkMetricFields,
             total_ms: totalMs,
             history_messages: sanitized.messages.length,
             answerable: response.answerable,
             source_count: response.sources.length,
-            skipped_model_call: operation === 'retrieve',
-          })
-        );
+            skipped_model_call: operation === 'answer' ? null : operation === 'retrieve',
+          });
         await logFaqQaForRequest({
           question: sanitized.currentQuestion,
           answer: response.answer,
@@ -1993,6 +2100,48 @@ async function handleFaqRequest(
         return jsonResponse(200, response);
       };
 
+      if (remoteTransport.kind === 'one-shot-v1') {
+        const remainingMs = remoteRagRemainingMs(context);
+        let answerResponse: FaqRagAnswerResult;
+        if (remainingMs - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS <= 0) {
+          answerResponse = {
+            contractVersion: FAQ_RAG_ANSWER_CONTRACT_VERSION,
+            ok: false,
+            error: { code: 'deadline_exceeded', retryable: true },
+          };
+        } else {
+          const remoteStartedAt = Date.now();
+          try {
+            answerResponse = await remoteTransport.port.answer({
+              contractVersion: FAQ_RAG_ANSWER_CONTRACT_VERSION,
+              idempotencyKey: invocation?.getIdempotencyKey?.(event, remoteTransport.kind) ?? randomUUID(),
+              currentQuestion: sanitized.currentQuestion,
+              messages: [{ role: 'user', content: sanitized.messages[0]!.content }],
+              ...(boundedPlan?.hints ? { hints: boundedPlan.hints } : {}),
+              remainingMs,
+            }, callContext);
+          } catch {
+            console.error('[faq-chat] remote call failed: operation=answer code=retrieval_failed');
+            answerResponse = {
+              contractVersion: FAQ_RAG_ANSWER_CONTRACT_VERSION,
+              ok: false,
+              error: { code: 'retrieval_failed', retryable: true },
+            };
+          } finally {
+            remoteAnswerMs = Date.now() - remoteStartedAt;
+          }
+        }
+        if (!answerResponse.ok) {
+          const mapped = remoteRagErrorResponse(answerResponse.error, fallbackMessage);
+          return respondFromRemote(mapped.response, mapped.route, 'answer', answerResponse.error.code);
+        }
+        const response = answerResponse.response;
+        const route = response.responseType === 'kb_answer' ? 'kb_answer'
+          : response.scopeFallback === true ? 'scope_fallback' : 'refuse_guard';
+        return respondFromRemote(response, route, 'answer', null);
+      }
+
+      const faqRagPort = remoteTransport.port;
       const retrieveRemainingMs = remoteRagRemainingMs(context);
       let retrieveResponse: FaqRagRetrieveResponse;
       if (retrieveRemainingMs - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS <= 0) {
@@ -2009,7 +2158,7 @@ async function handleFaqRequest(
             question: sanitized.currentQuestion,
             ...(boundedPlan?.hints ? { hints: boundedPlan.hints } : {}),
             remainingMs: retrieveRemainingMs,
-          });
+          }, callContext);
         } catch {
           // ポート実装は通常エラーDTOへ写像するが、予期しない reject も本文なしで閉じる。
           console.error(
@@ -2040,6 +2189,10 @@ async function handleFaqRequest(
       }
 
       const generateRemainingMs = remoteRagRemainingMs(context);
+      recordFaqGenerateBudget({
+        remaining_at_generate_start_ms: context?.getRemainingTimeInMillis ? generateRemainingMs : null,
+        effective_generate_timeout_ms: generateRemainingMs,
+      });
       let generateResponse: FaqRagGenerateResponse;
       if (generateRemainingMs <= 0) {
         generateResponse = {
@@ -2053,11 +2206,11 @@ async function handleFaqRequest(
           generateResponse = await faqRagPort.generate({
             contractVersion: FAQ_RAG_CONTRACT_VERSION,
             sessionToken: retrieveResponse.sessionToken,
-            idempotencyKey: randomUUID(),
+            idempotencyKey: invocation?.getIdempotencyKey?.(event, remoteTransport.kind) ?? randomUUID(),
             currentQuestion: sanitized.currentQuestion,
             messages: [{ role: 'user', content: sanitized.messages[0]!.content }],
             remainingMs: generateRemainingMs,
-          });
+          }, callContext);
         } catch {
           console.error(
             '[faq-chat] remote call failed: operation=generate code=generation_failed'
@@ -2158,8 +2311,7 @@ async function handleFaqRequest(
       // ルータータイムアウト→continue_kb→0ヒットの早期returnで in-flight を持ち越さない
       await settleSmalltalkCalls();
       const totalMs = Date.now() - startedAt;
-      console.log(
-        JSON.stringify({
+      emitFaqChatMetric({
           metric: 'faq_chat',
           ...agentMetricFields,
           model,
@@ -2179,8 +2331,7 @@ async function handleFaqRequest(
           answerable: false,
           source_count: 0,
           skipped_model_call: true,
-        })
-      );
+        });
       await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: fallbackMessage,
@@ -2208,14 +2359,20 @@ async function handleFaqRequest(
       typeof remainingMs === 'number'
         ? Math.min(20_000, remainingMs - MODEL_RESPONSE_RESERVE_MS)
         : undefined;
+    recordFaqGenerateBudget({
+      remaining_at_generate_start_ms: typeof remainingMs === 'number'
+        ? Math.max(0, remainingMs - MODEL_RESPONSE_RESERVE_MS) : null,
+      effective_generate_timeout_ms: modelTimeoutMs ?? 20_000,
+      generate_end_reason: 'failure',
+    });
     // 期限が下限未満なら呼ばずに固定文言で即答する。KB2万字を積んだ Sonnet が数秒で
     // end_turn することは事実上なく、入力分を課金して503になるだけ（PRレビュー指摘）。
     // kb.entryCount===0 の早期returnと同じ 200 + skipped_model_call で返す
     if (modelTimeoutMs !== undefined && modelTimeoutMs < MIN_MODEL_TIMEOUT_MS) {
+      recordFaqGenerateBudget({ generate_end_reason: 'skipped' });
       await settleSmalltalkCalls();
       const totalMs = Date.now() - startedAt;
-      console.log(
-        JSON.stringify({
+      emitFaqChatMetric({
           metric: 'faq_chat',
           ...agentMetricFields,
           model,
@@ -2237,8 +2394,7 @@ async function handleFaqRequest(
           answerable: false,
           source_count: 0,
           skipped_model_call: true,
-        })
-      );
+        });
       await logFaqQaForRequest({
         question: sanitized.currentQuestion,
         answer: TECHNICAL_FALLBACK_MESSAGE,
@@ -2286,6 +2442,11 @@ async function handleFaqRequest(
     });
     modelMs = Date.now() - modelStartedAt;
     const answerStopReason = answerCallObservation.stopReason;
+    recordFaqGenerateBudget({
+      generate_end_reason: completion ? 'success'
+        : answerStopReason === 'max_tokens' ? 'truncated'
+          : answerStopReason === 'refusal' ? 'refused' : 'failure',
+    });
 
     if (!completion) {
       // 応答自体は得られたが end_turn ではなかった（max_tokens 切断・refusal・pause_turn・
@@ -2308,8 +2469,7 @@ async function handleFaqRequest(
             : 'model_error';
       await settleSmalltalkCalls();
       const totalMs = Date.now() - startedAt;
-      console.log(
-        JSON.stringify({
+      emitFaqChatMetric({
           metric: 'faq_chat',
           ...agentMetricFields,
           model,
@@ -2343,8 +2503,7 @@ async function handleFaqRequest(
           valid_source_count: 0,
           source_count: 0,
           skipped_model_call: false,
-        })
-      );
+        });
       if (nonEndTurn) {
         // 監視は route（refuse_truncated / refuse_stop_other）のメトリクスフィルタで行う。
         // API障害ではないので console.error にはしない = ERRORベースのアラームには乗らない
@@ -2427,6 +2586,10 @@ async function handleFaqRequest(
       guardDetail === 'envelope_parse_failed' ||
       guardDetail === 'empty_answer' ||
       guardDetail === 'scope_fallback_invalid';
+    recordFaqGenerateBudget({
+      generate_end_reason: envelopeInvalid ? 'invalid_response'
+        : answerable ? 'success' : 'refused',
+    });
     const answer = scopeFallback
       ? scopeFallbackMessage
       : answerable
@@ -2458,8 +2621,7 @@ async function handleFaqRequest(
     const totalMs = Date.now() - startedAt;
 
     // メトリクスログ（本文・PIIは出さない）
-    console.log(
-      JSON.stringify({
+    emitFaqChatMetric({
         metric: 'faq_chat',
         ...agentMetricFields,
         model,
@@ -2499,8 +2661,7 @@ async function handleFaqRequest(
         valid_source_count: validIds.length,
         source_count: sources.length,
         skipped_model_call: false,
-      })
-    );
+      });
 
     await logFaqQaForRequest({
       question: sanitized.currentQuestion,
@@ -2532,8 +2693,7 @@ async function handleFaqRequest(
       /* 確定待ち自体の失敗は握る（エラー応答を優先） */
     }
     const totalMs = Date.now() - startedAt;
-    console.log(
-      JSON.stringify({
+    emitFaqChatMetric({
         metric: 'faq_chat',
         ...agentMetricFields,
         route: 'error',
@@ -2550,9 +2710,8 @@ async function handleFaqRequest(
         answerable: false,
         source_count: 0,
         skipped_model_call: false,
-      })
-    );
-    console.error('[faq-chat] Error:', error);
+      });
+    console.error('[faq-chat] request failed', errorLogFields(error));
     return jsonResponse(503, {
       error: SERVICE_UNAVAILABLE_MESSAGE,
       responseType: 'refuse',
@@ -2738,26 +2897,27 @@ function createNamedAgentPorts(
  */
 function warnNamedAgentRejected(
   agentId: string,
-  reason: string,
-  detail?: Record<string, unknown>
+  reason: 'invalid_agent_id' | 'profile_invalid_or_disabled' | 'effective_limits_invalid',
+  detail?: { model: string }
 ): void {
   console.warn(
     JSON.stringify({
       metric: 'faq_named_agent_rejected',
-      // パターン不一致の生入力もログするが、探索ノイズ対策で長さだけ制限する
-      agent_id: agentId.slice(0, 64),
+      // Invalid route input can contain contact information; never echo it.
+      agent_id: AGENT_ID_PATTERN.test(agentId) ? agentId : null,
       reason,
-      ...(detail ?? {}),
+      ...(detail === undefined ? {} : { model: detail.model }),
     })
   );
 }
 
 async function handleNamedAgentRequest(
   faqPorts: FaqPorts,
-  faqRagPort: FaqRagPort | undefined,
+  remoteTransport: RemoteFaqTransport | undefined,
   event: APIGatewayProxyEventV2,
   context: Context | undefined,
-  agentId: string
+  agentId: string,
+  invocation?: FaqInvocationObservation
 ): Promise<APIGatewayProxyResultV2> {
   if (!AGENT_ID_PATTERN.test(agentId)) {
     warnNamedAgentRejected(agentId, 'invalid_agent_id');
@@ -2769,13 +2929,13 @@ async function handleNamedAgentRequest(
     profile = await faqPorts.agentConfig.resolveAgentProfile(agentId);
   } catch (error) {
     // 読み取り障害もdefaultへは落とさない。公開レスポンスは存在有無を区別しない。
-    // スロットリング・権限・テーブル未作成をログで切り分けられるよう、ここだけerror詳細を出す
+    // Keep SDK failure classification, but omit error messages and credential/request data.
     console.error(
       JSON.stringify({
         metric: 'faq_named_agent_rejected',
         agent_id: agentId,
         reason: 'config_read_error',
-        error: error instanceof Error ? error.message : String(error),
+        ...errorLogFields(error),
       })
     );
     return jsonResponse(404, { error: 'agent not found' });
@@ -2786,6 +2946,7 @@ async function handleNamedAgentRequest(
   }
 
   let setting: FaqChatSettings | null;
+  const namedSettingsStartedAt = Date.now();
   try {
     setting = await faqPorts.storage.loadSettings();
   } catch (error) {
@@ -2799,14 +2960,15 @@ async function handleNamedAgentRequest(
         },
       },
     };
-    return handleFaqRequest(failedSettingsPorts, event, context, faqRagPort, profile.agentId);
+    return handleFaqRequest(failedSettingsPorts, event, context, remoteTransport, profile.agentId, invocation);
+  } finally {
+    recordFaqShellDuration('settings_ms', Date.now() - namedSettingsStartedAt);
   }
   const effectiveSetting = setting === null ? null : applyAgentProfile(setting, profile);
   if (
     effectiveSetting?.enabled === true &&
     !hasValidNamedEffectiveLimits(effectiveSetting, faqPorts.defaultModel)
   ) {
-    // FAQ_FREE_MODEL等のdefaultModelがallowlist外だとnamedだけ全滅するため、実効modelを必ず残す
     warnNamedAgentRejected(agentId, 'effective_limits_invalid', {
       model: effectiveSetting.model || faqPorts.defaultModel,
     });
@@ -2817,22 +2979,58 @@ async function handleNamedAgentRequest(
     createNamedAgentPorts(faqPorts, profile, effectiveSetting),
     event,
     context,
-    faqRagPort,
-    profile.agentId
+    remoteTransport,
+    profile.agentId,
+    invocation
   );
 }
 
-export function createFaqHandler(faqPorts: FaqPorts, faqRagPort?: FaqRagPort) {
-  return (event: APIGatewayProxyEventV2, context?: Context) => {
-    // CORS preflightはデータを返さない。AgentConfigの存在・状態に依存させず、従来coreの204を使う。
-    if (event.requestContext?.http?.method === 'OPTIONS') {
-      return handleFaqRequest(faqPorts, event, context, faqRagPort);
-    }
-    const agentId = event.pathParameters?.agentId;
-    // default routeは従来coreのPromiseをそのまま返す。AgentConfig・Settings・封筒・ログは不変。
-    if (agentId === undefined) {
-      return handleFaqRequest(faqPorts, event, context, faqRagPort);
-    }
-    return handleNamedAgentRequest(faqPorts, faqRagPort, event, context, agentId);
+export interface FaqHandlerOptions {
+  /** Embedding seam. Production composition uses randomUUID and ignores request headers. */
+  getIdempotencyKey?: (event: APIGatewayProxyEventV2, transport: RemoteFaqTransport['kind']) => string;
+}
+
+interface FaqInvocationObservation extends FaqHandlerOptions {
+  requestId: string;
+  coldStart: boolean;
+}
+
+export function createFaqHandler(
+  faqPorts: FaqPorts,
+  remoteTransport?: RemoteFaqTransport,
+  options: FaqHandlerOptions = {}
+) {
+  let coldStart = true;
+  return async (event: APIGatewayProxyEventV2, context?: Context): Promise<APIGatewayProxyResultV2> => {
+    const handlerStartedAt = Date.now();
+    const candidateId = event.requestContext?.requestId ?? context?.awsRequestId;
+    const invocation: FaqInvocationObservation = {
+      requestId: typeof candidateId === 'string' && /^[A-Za-z0-9_+=./:-]{1,128}$/.test(candidateId)
+        ? candidateId : randomUUID(),
+      coldStart,
+      getIdempotencyKey: options.getIdempotencyKey,
+    };
+    coldStart = false;
+    return runFaqShellTiming({
+      requestId: invocation.requestId,
+      coldStart: invocation.coldStart,
+      transport: remoteTransport?.kind,
+      remainingTime: context?.getRemainingTimeInMillis?.bind(context),
+      startedAt: handlerStartedAt,
+    }, async () => {
+      let response: APIGatewayProxyResultV2;
+      // CORS preflightはデータを返さない。AgentConfigの存在・状態に依存させず、従来coreの204を使う。
+      if (event.requestContext?.http?.method === 'OPTIONS') {
+        response = await handleFaqRequest(faqPorts, event, context, remoteTransport, undefined, invocation);
+      } else {
+        const agentId = event.pathParameters?.agentId;
+        response = agentId === undefined
+          ? await handleFaqRequest(faqPorts, event, context, remoteTransport, undefined, invocation)
+          : await handleNamedAgentRequest(faqPorts, remoteTransport, event, context, agentId, invocation);
+      }
+      return typeof response === 'object' && response !== null
+        ? { ...response, headers: { ...response.headers, 'x-faq-request-id': invocation.requestId } }
+        : response;
+    });
   };
 }

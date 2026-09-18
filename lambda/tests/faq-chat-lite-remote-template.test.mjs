@@ -254,7 +254,7 @@ test('prod candidate creates four unconditional retained tables with isolated ph
     AttributeName: 'ttl',
     Enabled: true,
   });
-  assert.equal(Object.hasOwn(qaLogs, 'StreamSpecification'), false);
+  assert.deepEqual(qaLogs.StreamSpecification, { StreamViewType: 'NEW_IMAGE' });
 });
 
 test('FaqChatFunction receives the exact candidate table names without the legacy global prefix', () => {
@@ -278,7 +278,7 @@ test('FaqChatFunction receives the exact candidate table names without the legac
   }
 });
 
-test('FAQ Q&A webhook is an optional secret wired only to the FAQ function', () => {
+test('FAQ Q&A webhook is an optional secret wired only to the FAQ sender and worker', () => {
   assert.deepEqual(template.Parameters.FaqQaNotifyWebhookUrl, {
     Type: 'String',
     Default: '',
@@ -294,7 +294,7 @@ test('FAQ Q&A webhook is an optional secret wired only to the FAQ function', () 
       )
     )
     .map(([logicalId]) => logicalId);
-  assert.deepEqual(environmentBindings, ['FaqChatFunction']);
+  assert.deepEqual(environmentBindings, ['FaqChatFunction', 'FaqQaNotifyFunction']);
   assert.deepEqual(
     template.Resources.FaqChatFunction.Properties.Environment.Variables
       .FAQ_QA_NOTIFY_WEBHOOK_URL,
@@ -477,6 +477,11 @@ test('remote profile parameters retain exact choices and deployment-safe constra
   assert.equal(profile.Default, 'free');
   assert.deepEqual(profile.AllowedValues, ['free', 'remote']);
 
+  const transport = template.Parameters.FaqRemoteRagTransport;
+  assert.equal(transport.Type, 'String');
+  assert.equal(transport.Default, 'split-v1');
+  assert.deepEqual(transport.AllowedValues, ['split-v1', 'one-shot-v1']);
+
   const baseUrl = template.Parameters.FaqRemoteRagBaseUrl;
   const roleArn = template.Parameters.FaqRemoteRagRoleArn;
   const externalId = template.Parameters.FaqRemoteRagExternalId;
@@ -562,6 +567,7 @@ test('FaqChatFunction wires exact remote env names and only conditional exact-ro
       Object.entries(variables).filter(([name]) => name.startsWith('FAQ_REMOTE_RAG_'))
     ),
     {
+      FAQ_REMOTE_RAG_TRANSPORT: { Ref: 'FaqRemoteRagTransport' },
       FAQ_REMOTE_RAG_BASE_URL: { Ref: 'FaqRemoteRagBaseUrl' },
       FAQ_REMOTE_RAG_ROLE_ARN: { Ref: 'FaqRemoteRagRoleArn' },
       FAQ_REMOTE_RAG_EXTERNAL_ID: { Ref: 'FaqRemoteRagExternalId' },

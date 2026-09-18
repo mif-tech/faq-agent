@@ -1,17 +1,18 @@
 import {
   createProductionFaqAdapters,
   createProductionRemoteFaqRagPort,
+  createProductionRemoteFaqRagAnswerPort,
 } from './adapters/production.js';
 import { createFreeFaqPorts } from './adapters/free/index.js';
 import type { FaqPorts } from './ports/index.js';
-import type { FaqRagPort } from './ports/rag.js';
+import { readRemoteFaqTransport, type RemoteFaqTransport } from './ports/remote-transport.js';
 import type { FaqAgentConfigPort } from './ports/storage.js';
 
 export type { FaqPorts } from './ports/index.js';
 
 export interface FaqComposition {
   ports: FaqPorts;
-  remoteRag?: FaqRagPort;
+  remoteRag?: RemoteFaqTransport;
 }
 
 const unavailableAgentConfig: FaqAgentConfigPort = {
@@ -35,6 +36,7 @@ export function createFaqComposition(): FaqComposition {
     return { ports: { ...createFreeFaqPorts(), storage, agentConfig } };
   }
   if (profile === 'remote') {
+    const transport = readRemoteFaqTransport();
     if (!process.env.FAQ_REMOTE_RAG_BASE_URL?.trim()) {
       throw new Error('FAQ_REMOTE_RAG_BASE_URL is required for FAQ_PORTS_PROFILE=remote');
     }
@@ -45,7 +47,9 @@ export function createFaqComposition(): FaqComposition {
       // remote-v1契約はagentIdを持たないため、named routeを有効にするとKB境界を強制できない。
       // 契約を拡張するまでは構成上404へ閉じ、default remoteだけを従来どおり提供する。
       ports: { ...ports, agentConfig: unavailableAgentConfig },
-      remoteRag: createProductionRemoteFaqRagPort(),
+      remoteRag: transport === 'one-shot-v1'
+        ? { kind: 'one-shot-v1', port: createProductionRemoteFaqRagAnswerPort() }
+        : { kind: 'split-v1', port: createProductionRemoteFaqRagPort() },
     };
   }
   throw new Error(`Unsupported FAQ_PORTS_PROFILE: ${profile}`);

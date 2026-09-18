@@ -92,6 +92,20 @@ export interface FaqRagGenerateSuccess {
 
 export type FaqRagGenerateResponse = FaqRagGenerateSuccess | FaqRagErrorResponse;
 
+/** Invocation-local transport observation; never serialized into the wire DTO. */
+export interface FaqRagHttpObservation {
+  operation: 'retrieve' | 'generate' | 'answer';
+  status: number;
+  /** API Gateway request ID only; no payload, session or idempotency data. */
+  requestId?: string;
+}
+
+/** Invocation-local transport observation; never serialized into the wire DTO. */
+export interface FaqRagCallContext {
+  onHttpRequest?: () => void;
+  onHttpResponse?: (observation: FaqRagHttpObservation) => void;
+}
+
 /**
  * Higher-level boundary for a managed retrieval + answer operation.
  *
@@ -99,6 +113,6 @@ export type FaqRagGenerateResponse = FaqRagGenerateSuccess | FaqRagErrorResponse
  * prompt policy and callbacks that are safe only inside the server process.
  */
 export interface FaqRagPort {
-  retrieve(request: FaqRagRetrieveRequest): Promise<FaqRagRetrieveResponse>;
-  generate(request: FaqRagGenerateRequest): Promise<FaqRagGenerateResponse>;
+  retrieve(request: FaqRagRetrieveRequest, context?: FaqRagCallContext): Promise<FaqRagRetrieveResponse>;
+  generate(request: FaqRagGenerateRequest, context?: FaqRagCallContext): Promise<FaqRagGenerateResponse>;
 }

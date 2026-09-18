@@ -317,8 +317,19 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
   );
 });
 
-test('public production adapter delegates remote creation and keeps free/storage contracts', async () => {
+test('public production adapter delegates remote creation and keeps free/storage contracts', async (t) => {
+  const oldAsync = process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED;
+  const oldWebhook = process.env.FAQ_QA_NOTIFY_WEBHOOK_URL;
+  process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED = 'false';
+  process.env.FAQ_QA_NOTIFY_WEBHOOK_URL = 'configured-test-webhook';
+  t.after(() => {
+    if (oldAsync === undefined) delete process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED;
+    else process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED = oldAsync;
+    if (oldWebhook === undefined) delete process.env.FAQ_QA_NOTIFY_WEBHOOK_URL;
+    else process.env.FAQ_QA_NOTIFY_WEBHOOK_URL = oldWebhook;
+  });
   const state = {
+    outcomes: [],
     events: [],
     freeCalls: [],
     getCalls: [],
@@ -337,6 +348,14 @@ test('public production adapter delegates remote creation and keeps free/storage
     path.join(LAMBDA_ROOT, 'functions', 'faq-chat', 'adapters', 'production.ts'),
     path.join(tempRoot, 'production.mjs'),
     (esbuild) => {
+      esbuild.onResolve({ filter: /shell-timing\.js$/ }, () => ({
+        path: 'timing', namespace: 'lite-test',
+      }));
+      esbuild.onLoad({ filter: /^timing$/, namespace: 'lite-test' }, () => ({
+        contents: `export function recordFaqQaNotifyOutcome(value) {
+          globalThis.__faqLiteStorageState.outcomes.push(value);
+        }`, loader: 'js',
+      }));
       esbuild.onResolve({ filter: /free[\\/]index\.js$/ }, () => ({
         path: 'free-index',
         namespace: 'lite-test',
@@ -383,7 +402,8 @@ test('public production adapter delegates remote creation and keeps free/storage
         contents: `export function createRemoteFaqRagHttpClient() {
           globalThis.__faqLiteStorageState.remoteCalls += 1;
           return globalThis.__faqLiteStorageState.remotePort;
-        }`,
+        }
+        export const createRemoteFaqRagAnswerHttpClient = createRemoteFaqRagHttpClient;`,
         loader: 'js',
       }));
       esbuild.onLoad({ filter: /^faq-qa-slack-notify$/, namespace: 'lite-test' }, () => ({
@@ -451,7 +471,7 @@ test('public production adapter delegates remote creation and keeps free/storage
   assert.deepEqual(state.putCalls, [
     {
       table: 'prod-candidate-FaqQaLogs',
-      item: record,
+      item: { ...record, qaNotifyDelivery: 'sync-v1' },
       options: {
         conditionExpression: 'attribute_not_exists(#ts)',
         expressionAttributeNames: { '#ts': 'ts' },
@@ -476,6 +496,23 @@ test('public production adapter delegates remote creation and keeps free/storage
     [{ record, timeoutMs: 375 }],
     'putQaLog must remain persistence-only even when a later Put fails'
   );
+
+  process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED = 'true';
+  // A rejected Put never causes an async marker or stream event to be committed.
+  await assert.rejects(adapters.storage.putQaLog(record), /put failed/);
+  assert.equal(state.notifyCalls.length, 1);
+  state.putError = null;
+  await adapters.storage.putQaLog(record);
+  assert.equal(state.putCalls.at(-1).item.qaNotifyDelivery, 'async-v1');
+  await adapters.storage.notifyQaLog(record, 375);
+  assert.equal(state.notifyCalls.length, 1, 'async delivery must never call the synchronous sender');
+  assert.equal(state.outcomes.at(-1), 'skipped');
+  delete process.env.FAQ_QA_NOTIFY_WEBHOOK_URL;
+  await adapters.storage.putQaLog(record);
+  assert.equal(state.putCalls.at(-1).item.qaNotifyDelivery, 'disabled');
+  await adapters.storage.notifyQaLog(record, 375);
+  assert.equal(state.outcomes.at(-1), 'disabled');
+  assert.equal(state.notifyCalls.length, 1);
 });
 
 test('public KB source filters active public default-agent rows twice', async () => {
