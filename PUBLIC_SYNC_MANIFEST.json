@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.5.0-alpha",
-  "canonicalHead": "a5d7784b5e7e84963fa3f66ab5d4195d7139617f",
-  "fileCount": 110,
+  "sourceRef": "v0.6.0-alpha",
+  "canonicalHead": "180fe2ff0e05bf0088d724b9f4d56d122ce3ee95",
+  "fileCount": 120,
   "files": [
     {
       "path": ".gitattributes",
@@ -31,12 +31,12 @@
     },
     {
       "path": "faq/app.js",
-      "sha256": "98b32ce8f85dffb4329437a5b35b71ca5f3d13511c95fb77d07494e8a3b03b73",
+      "sha256": "750b9656fb8ebec5ff871c581b5fa650e0ef318196049982522262e98257c974",
       "origin": "allowlist"
     },
     {
       "path": "faq/config.js",
-      "sha256": "e1528fe3a92723b49297489fce1192b4e382d642108f5b32945cc4706f0e3629",
+      "sha256": "7a58e97d58f8e61141f6e369692a1b615a9a5d8e99574c3aeb871437397eeda5",
       "origin": "overlay"
     },
     {
@@ -121,7 +121,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/free/index.ts",
-      "sha256": "7eae917aefe97aadc99b083793a5564c12cb70c7101a2231a6dda8d1f045f754",
+      "sha256": "2860dc626c194b9888d9572c0bedd54aa810c4ea7ef5c6842a2ca4ccaeb05b44",
       "origin": "allowlist"
     },
     {
@@ -135,43 +135,48 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/functions/faq-chat/adapters/inflight.ts",
+      "sha256": "cf9caecec15d8b14601e236624f08bc58eb7958ec83a0c5ba9288af4c2698894",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/functions/faq-chat/adapters/production.ts",
-      "sha256": "8a83eeb1b0c441ea2257d8ea0b4926d21fb68f5dbbdcfc52956724c9614b31d8",
+      "sha256": "6450fd4d62f82d01b07decfa9bca24eb5b4cad50cfbd4787bb6125a5a894b893",
       "origin": "overlay"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/answer-contract.ts",
-      "sha256": "b72390c610eaf22f3b0b2c05b4ff4fd272b4d47a71d9bb70772d447f8481c527",
+      "sha256": "f1a1a3728f66e1b946c1ca77637680ba8c5c1f5a7f66c7475e6a0a2867763314",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/contract.ts",
-      "sha256": "72c2aad46a60f6403f6ea89b07d35408c31b58edc2850ec3aabb66933c0bee6f",
+      "sha256": "b13ac10368ad656667be8f3c117bc7742b116cc7960db920493421b3a63f5829",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/http-client.ts",
-      "sha256": "7e3d6e7cfb58227539f5702f7db6e0679f55c379973bf3634de91e74254f47b9",
+      "sha256": "fae3475bc1dac1461761e7a820a13f628c10514ee4eb3da6d1da052a53c01357",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/README.md",
-      "sha256": "341d82bc462dbdf3093941494c58c444bca5d235277548f9adb003f80147e105",
+      "sha256": "31c3137fb8373ddc95f70b93a69b94c139f7c9b3765c0798b125767f5676031a",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/adapters/stub.ts",
-      "sha256": "5bb62b8228ec18c508cfd96d487341d56aa477b495b5aa88315afdc215310940",
+      "sha256": "723f7233c8de09c050b55ca14d22cc4e07358f09a7763520e0d41dfa4c594be5",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/bootstrap.ts",
-      "sha256": "8751b6668e74a20b9c015003646182f9ad2be99565ad7b51613683fcd7cdd0e0",
+      "sha256": "29d00be0ba6f3897b94fff924889a1ab061f310e44a14b37bc90e8363c1acfe2",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/composition.ts",
-      "sha256": "6da10c534d7811ab4437eb7fc5bce31f4a22139f782369074c596e8268a300e8",
+      "sha256": "37e4dea66dcb42de8324972fb50653ca49f590b88553215c38e2427c57d6fd37",
       "origin": "allowlist"
     },
     {
@@ -181,7 +186,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/handler.ts",
-      "sha256": "5d298483a6ff3ab4950df86d9e709d216acee199970f3986c8574b124e2e19dd",
+      "sha256": "10cc22bc51fd313bd77f63048c3e7eb7952501f8d6664078b60cc3cdc3ce5096",
       "origin": "allowlist"
     },
     {
@@ -201,12 +206,17 @@
     },
     {
       "path": "lambda/functions/faq-chat/ports/index.ts",
-      "sha256": "57f2fde33c1aa8c0752b5349cc68a7ce6e075abd6563a16ab90a6bf8ea1f3ed9",
+      "sha256": "03ea036ef0dac680450a3906e71eac1fc2c520fc3016a950a2a94b68a6f68f23",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/functions/faq-chat/ports/inflight.ts",
+      "sha256": "59149847a6797e6023c6ff8dbbf49c1ffdc62b0b0caad31df4512e20871cab9c",
       "origin": "allowlist"
     },
     {
       "path": "lambda/functions/faq-chat/ports/rag.ts",
-      "sha256": "b7a2052094bd364fe454267f36e741c1cc1db19de325227e1de0d8262f55d787",
+      "sha256": "fc93edaf02e86a72f02341f9751a0011f70eb35f4f340ca8511d108ac7c30e7a",
       "origin": "allowlist"
     },
     {
@@ -225,8 +235,13 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/functions/faq-chat/rest-event.ts",
+      "sha256": "b70e19b32d5731b4c8c28cf87b56d221cb1efc4aba3818c86632f1944ccc3ead",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/functions/faq-chat/shell-timing.ts",
-      "sha256": "d9cb0535041cbc9e8c321148f90267e2f7e323c6089a3ee1d735debdedbf59ce",
+      "sha256": "f63dc5c5bc6794344d0143984e1754b06e0f13611f64bff100ced0632348fcf2",
       "origin": "allowlist"
     },
     {
@@ -351,12 +366,12 @@
     },
     {
       "path": "lambda/template.yaml",
-      "sha256": "91f310c9989da133351b5ed39afcedf3e148ac0c929e8a3ce2ee05e79b865a23",
+      "sha256": "2ebb64d6af597f404e3e7d968f73105d2a2f7ffc1041f3ed62e4a9fe3d7bba6c",
       "origin": "overlay"
     },
     {
       "path": "lambda/tests/faq-chat-answer-wire.test.mjs",
-      "sha256": "0056379313a6b530b043429f9135d2c89f2a00b9256039e3ed09c26598734766",
+      "sha256": "c1bd399dd921ecfb038cbc2558314d60a0be7000abd309111c269502c108223b",
       "origin": "allowlist"
     },
     {
@@ -391,17 +406,22 @@
     },
     {
       "path": "lambda/tests/faq-chat-handler.test.mjs",
-      "sha256": "7a971728d73c22f5aab6bcdb3c4138d62d7c590de95b5fe1eb8313d83d0f047f",
+      "sha256": "63d7ec12a4baadef372a0e6d53a93512474441018bdd47dd4924a74f0a7db308",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-iam-boundary.test.mjs",
-      "sha256": "0fb4a7e94900df6ceab6d29a50cd20a9c3cfd5a2cbb4366358802f6e23423cc4",
+      "sha256": "30013570642d863d7eee0216681847864437818d2a031c479306debdaa6ea7ef",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/tests/faq-chat-inflight.test.mjs",
+      "sha256": "976a656543a54c3dedb6951a58649ff4ce2c414dcf27185550e8d97de69c600a",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/faq-chat-lite-adapters.test.mjs",
-      "sha256": "45e48b7acdffa7bf5780b1c8390ca9036ea7fae7e96c0d1c2748dcf525451063",
+      "sha256": "9dd42856232eef42b8f2339d204b85ef881b0c568cd58edb5ad98e5d759d5aa0",
       "origin": "overlay"
     },
     {
@@ -421,7 +441,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-remote-template.test.mjs",
-      "sha256": "43b49fcd8bfd49d0bbcbb5947b2711daa61245e1f0d434323b977489eb3c76f3",
+      "sha256": "3c517016e8dce767355f673ac018902fb7db8979fca1e98aed0c9d2afab2f1a7",
       "origin": "overlay"
     },
     {
@@ -435,8 +455,13 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/tests/faq-chat-remote-function-url.test.mjs",
+      "sha256": "747474ca033322439b5de931f65122db7f2e00c0bccd7f6f69b17b3067f86c64",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/tests/faq-chat-remote-http-client.test.mjs",
-      "sha256": "fa07442ade6136c0cf341eade1e2e5765be14366d419673fec88ab987f4e66e0",
+      "sha256": "1dab90fd9993d1e97f140b6f9dd857309a61707ce3439c880e6aa71b46a10721",
       "origin": "allowlist"
     },
     {
@@ -446,7 +471,17 @@
     },
     {
       "path": "lambda/tests/faq-chat-remote-wire.test.mjs",
-      "sha256": "c708b450c274738545aad96d647aca6182b7ca7c89a4b1a9d5bffbda154b0a33",
+      "sha256": "dc32fbd7be7a5a0535238f4c7a46aedd27606698ce51a3f4076e53e47948aada",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/tests/faq-chat-rest-event.test.mjs",
+      "sha256": "51b36065f4eccbfdce3e5f1dd952926a34b90d908877a000be069679413e8d96",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/tests/faq-chat-rest-stream.test.mjs",
+      "sha256": "18d7038ee31a66d4152c9a0f6b1e27824f06c86141f4b2080a16aa49574c430c",
       "origin": "allowlist"
     },
     {
@@ -460,18 +495,33 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/tests/faq-chat-ui.test.mjs",
+      "sha256": "8568608ec2c406a291004d33ad288aa3feef4581be673867c0499296105a062c",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/tests/faq-inflight-template.test.mjs",
+      "sha256": "6164de84d1d6aa8956cffb5b1873420c22c3d1e12d7c8b39a7469eb03bd1671b",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/tests/faq-local-scripts.test.mjs",
       "sha256": "4bafd896dda5e06673d52cfece4316b418cc48584dd0fcb89ae8c7bfef2e8f35",
       "origin": "allowlist"
     },
     {
+      "path": "lambda/tests/faq-rest-stream-template.test.mjs",
+      "sha256": "7f5223430f5fdef237ddee472883b95c367ffa65260a4c1b03785f49ebb6d49c",
+      "origin": "overlay"
+    },
+    {
       "path": "lambda/tests/fixtures/faq-chat-remote-one-shot-v1.golden.json",
-      "sha256": "83a0bf5dc62565ca705e7950e30a6d43611e8030af619d1b5edfc48d59a3dcd9",
+      "sha256": "fd02c127d2f82fdfdbffc9449ddec1568b0b3d88740288e4411eddd300a64ee6",
       "origin": "allowlist"
     },
     {
       "path": "lambda/tests/fixtures/faq-chat-remote-v1.golden.json",
-      "sha256": "7057a437e9df0544b98d3e3190bfec69f6b4b607b906f99cc6cf070c446b10e2",
+      "sha256": "ad61c55874dd0dbeab06353e742f5d4f642a208966939e56fef8c194b8274146",
       "origin": "allowlist"
     },
     {
@@ -521,7 +571,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "ddd4e7a584baca6808450c0bacc41ef0eb43e3f9281af3eca217831ed69ec151",
+      "sha256": "2f409a81c7326064940accd939a4250ce90837f3af4c281e3f18ac4faf3e4da7",
       "origin": "overlay"
     },
     {

@@ -11,8 +11,8 @@ prompt, model, and generation implementation.
 PII masking, and HTTP response formatting local, while delegating the retrieval, private prompt,
 answer generation, and public-envelope core through that higher-level client.
 
-The client requires `FAQ_REMOTE_RAG_BASE_URL` (HTTPS only), uses `AWS_REGION`, and signs
-`execute-api` requests with SigV4. Its library seam can use the default credential chain when no
+The client requires `FAQ_REMOTE_RAG_BASE_URL` (HTTPS only), uses `AWS_REGION`, and selects the
+SigV4 signing service from the endpoint hostname. Its library seam can use the default credential chain when no
 role is supplied for isolated tests, but the public lite SAM template does not expose a role-less
 remote deployment. `FaqPortsProfile=remote` requires all three public SAM parameters:
 `FaqRemoteRagBaseUrl`, the exact cross-account `FaqRemoteRagRoleArn`, and
@@ -26,6 +26,39 @@ same stack to `FaqPortsProfile=free` and clears all three remote parameters, aft
 verified that the local public KB is ready. Recovery is another reviewed deployment change that
 restores the complete remote parameter set; approval, rollback evidence, and incident handling
 belong in the deploying organization's runbook rather than this public transport contract.
+
+## Endpoint selection
+
+| Base URL hostname | SigV4 service | Region validation |
+| --- | --- | --- |
+| Standard API Gateway `*.execute-api.<region>.amazonaws.com` (existing default) | `execute-api` | Host region must equal `AWS_REGION`. |
+| Lambda Function URL `<id>.lambda-url.<region>.on.aws` | `lambda` | Host region must equal `AWS_REGION`. |
+| Other hosts, including API Gateway custom domains | `execute-api` | Host region cannot be inferred; configure the same region as the endpoint. |
+
+Function URL detection matches the entire parsed hostname with
+`^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$`. Extra domain suffixes and nested
+subdomains do not select `lambda`. A standard endpoint's region mismatch fails synchronously
+at client construction, before credential lookup or HTTP. There is no signing-service environment
+or SAM parameter override. All operations keep `${baseUrl}/v1/${operation}` and their existing
+DTOs, deadlines and retry behavior. SigV4 includes the host, payload SHA-256, timestamp and
+temporary-credential session token for both entrypoints.
+
+This PR adds support without changing the existing API Gateway base URL. Function URLs use
+`AWS_IAM` authentication and `BUFFERED` invocation. The assumed MIF invoker role needs
+`lambda:InvokeFunctionUrl` for the specific v1 function and `lambda:InvokeFunction` for that
+function with `lambda:InvokedViaFunctionUrl=true`; the public caller role still only assumes
+the configured role. This does not authorize ordinary direct Lambda invocation.
+
+The approved cutover and rollback procedure will be finalized in PR4. Cutover will set
+`FaqRemoteRagBaseUrl` / `FAQ_REMOTE_RAG_BASE_URL` to the MIF-provided Function URL without an
+operation suffix; rollback will restore the recorded API Gateway base URL. Endpoint selection
+is independent of `FaqRemoteRagTransport`; no one-shot/split selection changes automatically.
+
+Both API Gateway JSON 403 responses and Function URL JSON, text or empty 403 responses retain
+the existing technical failure classification (`retrieval_failed`, or `generation_failed` for
+split generation), with `remote_attempts[].outcome=failure` and no authentication retry.
+HTTP observations and error logs retain status 403 for diagnosis; gateway response bodies are
+never logged and do not add new outcome values.
 
 ## Why retrieve and generate are separate
 
@@ -86,13 +119,14 @@ and telemetry. Tenant identity comes from the IAM principal's exact server role 
 Success is `{ contractVersion: "remote-one-shot-v1", ok: true, response }`, where `response`
 uses the same public answer, source URL and refusal guards described below. Failure is
 `{ contractVersion: "remote-one-shot-v1", ok: false, error: { code, retryable } }`, with
-`retryAfterMs` required only for `quota_exceeded`.
+`retryAfterMs` required for `quota_exceeded` and `busy` (positive safe integer up to 86,400,000; the server currently emits 5000 for `busy`).
 
 | Error | HTTP status | Retryable |
 | --- | --- | --- |
 | `no_match` | 404 | false |
 | `invalid_contract` | 400 | false |
 | `quota_exceeded` | 429 | true |
+| `busy` | 429 | true |
 | `kill_switch` | 503 | true |
 | `deadline_exceeded` | 504 | true |
 | `retrieval_failed` / `generation_failed` | 502 | true |
@@ -154,8 +188,10 @@ or a sum of the two event counts. No timing field is added to response DTOs.
 
 | Fields | Meaning |
 | --- | --- |
+| `entrypoint` | `http-api` for the existing entrypoint or `rest-stream` for the optional public Regional REST API. This field belongs only to `faq_shell_timing`; `faq_chat` fields and response DTOs are unchanged. |
 | `handler_total_ms`, `handler_outcome` | Handler entry through the terminal snapshot, including awaited Q&A and response serialization; excludes Lambda INIT, final metric serialization/log delivery, Gateway and browser transit. Outcome is `success` for a completed HTTP response below 400, `skipped` for preflight/4xx, `disabled` for the Settings kill switch, or `failure` for 5xx/unhandled exceptions; it does not measure answer quality. |
 | `remaining_start_ms`, `remaining_return_ms` | Lambda remaining time at entry and the terminal snapshot; null when no valid Lambda context is available. |
+| `inflight_outcome`, `inflight_slot`, `inflight_acquire_ms`, `inflight_release_outcome` | Shell processing-slot admission (`acquired`, `busy`, or `disabled`), slot index or null, acquisition wait in ms, and best-effort release result (`skipped`, `success`, or `failure`). These fields belong only to `faq_shell_timing`; existing `faq_chat` fields retain their meaning. |
 | `qa_write_ms`, `qa_write_outcome`, `qa_notify_ms`, `qa_notify_outcome` | Caller time waiting for Q&A Put and the optional synchronous notification. A timeout records only the bounded wait, not a later background completion. Async public delivery records `skipped` for shell notification; worker delivery is observed separately. |
 | `settings_ms`, `router_ms`, `smalltalk_settle_ms`, `response_serialize_ms` | Settings I/O, local router, waiting for the remaining smalltalk pipeline, and serializing the HTTP response. These intervals can overlap other existing diagnostic intervals; do not blindly sum every field. |
 | `credential_wait_ms`, `assume_role_ms`, `assume_role_attempts` | Sum of observed credential waits, observed STS work and SDK attempts, also retained in bounded `credential_events`. AssumeRole time includes the SDK's source credential/signing/retry work from refresh start until completion or caller cutoff. Multiple waiters may observe the same shared refresh; their times/counts are not additive distinct STS work. Timed-out callers do not emit a second update when a shared refresh later settles. |
@@ -250,13 +286,31 @@ plain, `scopeFallback: true`, or technical
 Do not add optional fields to `remote-v1` after release. A wire-shape change requires a new
 contract version and an explicit compatibility policy.
 
-Defined errors are `no_match`, `expired_token`, `quota_exceeded`, `kill_switch`,
+Defined errors are `no_match`, `expired_token`, `quota_exceeded`, `busy`, `kill_switch`,
 `invalid_contract`, `deadline_exceeded`, `retrieval_failed`, and `generation_failed`. Retryability
-is fixed by the contract. Only `quota_exceeded` carries `retryAfterMs`, and it is required there.
+is fixed by the contract. `quota_exceeded` and `busy` require `retryAfterMs`: a positive safe integer
+at most `REMOTE_V1_LIMITS.retryAfterMs` (86,400,000). `busy` is always retryable; the server currently
+returns 5000, while callers accept other values within that bound. No other code carries `retryAfterMs`.
 Error DTOs never carry internal messages or quota state.
 `retryable: true` means the caller may restart the workflow, normally from `retrieve`; it does not
 promise that re-sending a consumed token will execute generation again. A matching idempotency key
 replays the cached result, while a different key receives `expired_token`.
+
+`busy` means that a concurrent processing lease is unavailable, independently of daily quota.
+Both split and one-shot return it with HTTP 429. The shell maps it to HTTP 429 with
+`Retry-After` derived from remote `retryAfterMs` (rounded up to seconds and clamped to 1–60),
+the existing CORS headers, and `{ "error": "busy", "retryable": true }`;
+the shell's own full slots use `Retry-After: 5`.
+It does not create a refusal envelope. The browser uses its existing HTTP 429 message.
+With admission enabled, generate/answer first perform one read-only replay lookup after
+authorization and kill switches. Completed replays consume no processing slot and return even
+when slots are full or the generation reserve is unavailable, provided the caller deadline remains.
+Admission then runs after the remaining-budget check, before daily
+quota consumption or the generate/answer claim. `busy` consumes no quota, session or idempotency key
+and is not stored as a terminal result. Retry with the same key (and the same unconsumed split
+session while it remains valid). In-progress replay waits hold no processing slot: a lease acquired
+before a claim race is released before waiting. Waiting only returns replay/error, never takes over
+execution; any later executing request must acquire a lease again. Replays do not charge quota or rerun providers.
 
 ## Opaque-session lifecycle (caller-visible behavior)
 
@@ -271,6 +325,96 @@ For a `remote-v1` caller the two-step flow behaves as:
 
 Each caller wait and provider call has a logical deadline, but physical cancellation still depends
 on the low-level provider honoring its `timeoutMs`.
+
+### Time budgets and configuration
+
+The private server defaults remain a 20,000 ms generation cap, a 30,000 ms split-session TTL,
+a 250 ms generation reserve, and a 1,500 ms Lambda exit reserve. Server deployment settings
+`REMOTE_RAG_MAX_GENERATION_TIMEOUT_MS` and `REMOTE_RAG_SESSION_TTL_MS` configure the cap
+(for both split and one-shot) and TTL. The managed stack validates their bounds and consistency
+with its configured Lambda timeout at startup; see the private remote-rag stack README.
+The provider receives the facade's effective timeout, including any tighter caller deadline.
+
+Split generation uses the smallest of the configured generation cap, caller budget after the
+generation reserve and claim time, original session deadline, and store claim budget. Ties are
+reported in that order (`max_generation_cap`, `caller`, `session_deadline`, `claim`); the claim
+limiter is reported only when the store supplies a strictly tighter bound. Increasing the TTL
+never extends the original retrieval request: session expiry is
+`min(retrievalCompletedAt + sessionTtlMs, retrievalStartedAt + remainingMs)`, and its stored
+deadline remains `retrievalStartedAt + remainingMs`. A later generate request cannot extend it.
+One-shot uses the smaller of the same generation cap and its remaining caller budget after
+claim, retrieval, generation transition, and the generation reserve.
+
+The public shell derives its caller budget from Lambda context with a 2,500 ms response reserve;
+the remote contract still caps `remainingMs` at 60,000 ms. The public SAM parameter
+`FaqChatFunctionTimeoutSeconds` defaults to 28 seconds, and browser `requestTimeoutMs` defaults
+to 40,000 ms (also used when omitted or invalid). Configuring these values does not remove
+the existing HTTP API's 30-second integration limit. Timeout extensions belong to the PR4
+staged transport rollout; this configuration change keeps every existing default.
+
+```text
+Browser requestTimeoutMs (default 40,000 ms)
+  -> Public HTTP API (existing default; integration limit 30 seconds)
+     OR public Regional REST STREAM (PR3, default OFF)
+        FaqRestStreamIntegrationTimeoutSeconds (default 70 seconds; max 900 / 15 minutes)
+        Regional idle timeout: 300 seconds
+  -> Public shell Lambda: FaqChatFunctionTimeoutSeconds (default 28 seconds)
+     -> caller remainingMs = Lambda remaining time - 2,500 ms reserve (contract max 60,000 ms)
+        -> MIF HTTP API OR IAM Function URL (endpoint selection is independent)
+           -> private generation cap (default 20,000 ms)
+              bounded by caller/session/claim deadlines and existing reserves
+```
+
+The public REST route is conditional on `FaqRestStreamApiEnabled=true`; it creates a dedicated
+`FaqChatStreamFunction` and exports the stage-bearing `FaqRestStreamApiUrl`. It buffers the
+existing handler's complete JSON and writes it once with the Lambda streaming metadata prelude;
+it does not progressively display tokens. A larger integration timeout alone does not extend
+the Lambda, browser, remote contract, or provider budgets. Because the handler waits for the
+complete JSON before writing, the 300-second Regional idle timeout remains relevant even when
+the STREAM integration parameter is larger. See [API Gateway STREAM limits](https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode.html).
+
+The new function has a separate execution role. Before remote cutover, the MIF invoker role's
+trust must include the exact conditional `FaqChatStreamCallerRoleArn` output with the configured
+External ID; the same AssumeRole policy on both public functions does not establish that trust.
+The route is currently available only in the public lite template; tenant chatops needs a
+separate PR to add its parameters and outputs to the canonical template. The canonical
+`generate-frontend-env.sh` is not distributed with public lite and cannot perform this cutover.
+PR4 must first pass CreateStack with `FaqRestStreamApiEnabled=true` in a validation stage;
+`sam build` and `sam validate --lint` do not verify the resolved timeout type or a live STREAM
+deployment. Before coexistence, set `FaqMaxInflight` / `FAQ_MAX_INFLIGHT` to a positive value:
+the new function has no reserved concurrency, and the shared lease is disabled by default.
+Independent API throttles permit a combined 4 rps / burst 10 for the same FAQ route while
+both entrypoints are exposed. Plan to reduce the old HTTP API RouteSettings throttle or
+remove its events in a separate PR, retaining the settings needed for rollback.
+
+After validation, manually read `FaqRestStreamApiUrl`, replace the deployed `faq/config.js`
+`apiBaseUrl` with that stage-bearing URL without a trailing slash, and set `faq/index.html`
+CSP `connect-src` to its origin. Upload only those two files to their existing S3 keys; never
+sync the whole bucket. Rollback restores the previous `FaqApiUrl` and CSP origin using the
+same two files (`ApiEndpoint` is the equivalent output name in canonical tenant chatops).
+Restore the old route's throttle/events before rollback if they were restricted. UI
+publication and timeout extensions remain PR4 operations. Observe the new Lambda's metrics
+together with the REST API's CloudWatch metrics, and separate shell logs by
+`faq_shell_timing.entrypoint`; existing `faq_chat` metrics retain their meaning.
+
+### Concurrent processing leases (PR1b)
+
+SAM `FaqMaxInflight` supplies `FAQ_MAX_INFLIGHT` (integer 0–10, default 0). Zero and the
+local adapter disable processing-slot I/O. Enabled shells acquire a Settings-table lease
+after validation/settings and before Claude routing or KB access. A template-only immediate
+answer/refusal that calls neither Claude nor remote does not acquire a slot. Each lease uses
+`key=faq_inflight_slot#<i>` in the existing Settings table, without changing its key or TTL.
+Full slots immediately return the same HTTP 429 response described above; no polling occurs.
+
+The private server independently supports a total limit and optional tenant limit, both disabled
+by default. Split retrieve/generate and one-shot answer each acquire their own lease after
+authorization, kill switches and budget checks, before quota consumption. Completed replays bypass
+admission, and in-progress waits release any held lease before polling. Leases use Lambda remaining time, bounded by
+its Timeout, without subtracting caller deadlines or response reserves. Release is conditional
+on the owner token and best-effort; a failed release is reclaimed through lease expiry.
+The shell settles outstanding smalltalk work and Q&A handling before release. A hard Lambda
+timeout can prevent finally from completing; the full remaining-time lease covers that case.
+Processing limits and timeout extensions are activated only in the PR4 staged rollout.
 
 Server-side internals — the opaque-session composer, the session/replay/quota state store
 (in-memory reference vs the managed DynamoDB state store), tenant namespacing, and the private

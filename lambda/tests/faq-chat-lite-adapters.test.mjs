@@ -320,6 +320,8 @@ test('lite DynamoDB resolves and uses only exact candidate table names', async (
 test('public production adapter delegates remote creation and keeps free/storage contracts', async (t) => {
   const oldAsync = process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED;
   const oldWebhook = process.env.FAQ_QA_NOTIFY_WEBHOOK_URL;
+  const oldInflight = process.env.FAQ_MAX_INFLIGHT;
+  process.env.FAQ_MAX_INFLIGHT = '0';
   process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED = 'false';
   process.env.FAQ_QA_NOTIFY_WEBHOOK_URL = 'configured-test-webhook';
   t.after(() => {
@@ -327,6 +329,8 @@ test('public production adapter delegates remote creation and keeps free/storage
     else process.env.FAQ_QA_NOTIFY_ASYNC_ENABLED = oldAsync;
     if (oldWebhook === undefined) delete process.env.FAQ_QA_NOTIFY_WEBHOOK_URL;
     else process.env.FAQ_QA_NOTIFY_WEBHOOK_URL = oldWebhook;
+    if (oldInflight === undefined) delete process.env.FAQ_MAX_INFLIGHT;
+    else process.env.FAQ_MAX_INFLIGHT = oldInflight;
   });
   const state = {
     outcomes: [],
@@ -334,6 +338,7 @@ test('public production adapter delegates remote creation and keeps free/storage
     freeCalls: [],
     getCalls: [],
     putCalls: [],
+    updateCalls: [],
     notifyCalls: [],
     putError: null,
     remoteCalls: 0,
@@ -348,6 +353,13 @@ test('public production adapter delegates remote creation and keeps free/storage
     path.join(LAMBDA_ROOT, 'functions', 'faq-chat', 'adapters', 'production.ts'),
     path.join(tempRoot, 'production.mjs'),
     (esbuild) => {
+      esbuild.onResolve({ filter: /^@aws-sdk\/lib-dynamodb$/ }, () => ({
+        path: 'update-command', namespace: 'lite-test',
+      }));
+      esbuild.onLoad({ filter: /^update-command$/, namespace: 'lite-test' }, () => ({
+        contents: 'export class UpdateCommand { constructor(input) { this.input = input; } }',
+        loader: 'js',
+      }));
       esbuild.onResolve({ filter: /shell-timing\.js$/ }, () => ({
         path: 'timing', namespace: 'lite-test',
       }));
@@ -421,6 +433,12 @@ test('public production adapter delegates remote creation and keeps free/storage
             KnowledgeEntries: 'prod-candidate-KnowledgeEntries',
             FaqQaLogs: 'prod-candidate-FaqQaLogs'
           };
+          export const liteDocumentClient = {
+            async send(command) {
+              globalThis.__faqLiteStorageState.updateCalls.push(command.input);
+              return {};
+            }
+          };
           export async function getItem(table, key) {
             globalThis.__faqLiteStorageState.getCalls.push({ table, key });
             return globalThis.__faqLiteStorageState.settingRow;
@@ -442,6 +460,8 @@ test('public production adapter delegates remote creation and keeps free/storage
   assert.equal(state.remoteCalls, 1);
 
   const adapters = module.createProductionFaqAdapters();
+  assert.deepEqual(await adapters.inflight.acquire(30_000), { kind: 'disabled' });
+  assert.deepEqual(state.updateCalls, [], 'default capacity never writes Settings');
   assert.equal(adapters.defaultModel, 'free-test');
   assert.strictEqual(adapters.smalltalkGeneration, state.smalltalkPort);
   assert.strictEqual(adapters.agentConfig, state.agentConfigPort);
@@ -451,6 +471,18 @@ test('public production adapter delegates remote creation and keeps free/storage
   assert.deepEqual(state.getCalls, [
     { table: 'prod-candidate-Settings', key: { key: 'faq_chat' } },
   ]);
+
+  process.env.FAQ_MAX_INFLIGHT = '1';
+  const lease = await module.createProductionFaqAdapters().inflight.acquire(30_000);
+  process.env.FAQ_MAX_INFLIGHT = '0';
+  assert.equal(lease.kind, 'acquired');
+  await lease.release();
+  assert.equal(state.updateCalls.length, 2);
+  for (const call of state.updateCalls) {
+    assert.equal(call.TableName, 'prod-candidate-Settings');
+    assert.deepEqual(call.Key, { key: 'faq_inflight_slot#0' });
+    assert.ok(call.ConditionExpression, 'all lease writes are conditional');
+  }
 
   const record = {
     dateBucket: '2026-08-21',

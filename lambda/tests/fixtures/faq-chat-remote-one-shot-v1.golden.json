@@ -11,6 +11,7 @@
     { "statusCode": 503, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"kill_switch\",\"retryable\":true}}" },
     { "statusCode": 504, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"deadline_exceeded\",\"retryable\":true}}" },
     { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"retrieval_failed\",\"retryable\":true}}" },
-    { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"generation_failed\",\"retryable\":true}}" }
+    { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"generation_failed\",\"retryable\":true}}" },
+    { "statusCode": 429, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}" }
   ]
 }

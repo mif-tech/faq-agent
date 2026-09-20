@@ -66,6 +66,26 @@ async function withoutConsoleErrors(run) {
   }
 }
 
+test('busy crosses retrieve/generate without sleeping or retrying', async () => {
+  for (const operation of ['retrieve', 'generate']) {
+    let calls = 0;
+    const golden = fixture.busy[operation];
+    const client = createRemoteFaqRagHttpClient({
+      env: ENV,
+      credentialsProvider: STATIC_CREDENTIALS,
+      now: () => fixture.clock.initialEpochMs,
+      sleep: async () => assert.fail('busy must not wait for a slot'),
+      fetch: async () => {
+        calls += 1;
+        return new Response(golden.body, { status: golden.statusCode });
+      },
+    });
+    const result = await client[operation](fixture.cases.success[operation].request);
+    assert.deepEqual(result, JSON.parse(golden.body));
+    assert.equal(calls, 1);
+  }
+});
+
 test('configuration fails fast and normalizes the base URL trailing slash', async () => {
   const common = { credentialsProvider: STATIC_CREDENTIALS };
   assert.throws(

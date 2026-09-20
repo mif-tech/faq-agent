@@ -28,6 +28,12 @@ interface TimingState {
   attempts: FaqRemoteAttemptTiming[];
 }
 const invocation = new AsyncLocalStorage<TimingState>();
+const entrypoint = new AsyncLocalStorage<'http-api' | 'rest-stream'>();
+
+/** Select the ingress without changing handler options or the existing faq_chat metric. */
+export function runFaqEntrypoint<T>(value: 'http-api' | 'rest-stream', callback: () => Promise<T>): Promise<T> {
+  return entrypoint.run(value, callback);
+}
 const outcomes = new Set<string>(['success', 'disabled', 'skipped', 'timeout', 'failure']);
 const generateReasons = new Set<string>([...outcomes, 'no_match', 'truncated', 'refused', 'invalid_response']);
 const duration = (value: unknown): number => typeof value === 'number' && Number.isFinite(value)
@@ -71,6 +77,22 @@ export function finalizeFaqQaNotifyOutcome(outcome: 'success' | 'timeout' | 'fai
 export function recordFaqHandlerOutcome(outcome: FaqTimingOutcome): void {
   const state = activeState();
   if (state && outcomes.has(outcome)) state.fields.handler_outcome = outcome;
+}
+
+export function recordFaqInflightAcquisition(
+  outcome: 'acquired' | 'busy' | 'disabled', slot: number | null, milliseconds: number
+): void {
+  const state = activeState();
+  if (!state || !['acquired', 'busy', 'disabled'].includes(outcome)) return;
+  state.fields.inflight_outcome = outcome;
+  state.fields.inflight_slot = outcome === 'acquired' && Number.isSafeInteger(slot) &&
+    slot !== null && slot >= 0 && slot < 10 ? slot : null;
+  state.fields.inflight_acquire_ms = duration(milliseconds);
+}
+
+export function recordFaqInflightRelease(outcome: 'success' | 'failure'): void {
+  const state = activeState();
+  if (state && ['success', 'failure'].includes(outcome)) state.fields.inflight_release_outcome = outcome;
 }
 
 export function recordFaqGenerateBudget(fields: {
@@ -178,6 +200,8 @@ export async function runFaqShellTiming<T>(options: {
       remaining_at_generate_start_ms: null, effective_generate_timeout_ms: null,
       remaining_at_answer_start_ms: null, effective_answer_timeout_ms: null,
       generate_end_reason: 'skipped',
+      inflight_outcome: 'disabled', inflight_slot: null, inflight_acquire_ms: 0,
+      inflight_release_outcome: 'skipped',
     },
   };
   return invocation.run(state, async () => {
@@ -199,6 +223,7 @@ export async function runFaqShellTiming<T>(options: {
       // timed-out work cannot mutate this event or a subsequent invocation's event.
       console.log(JSON.stringify({
         metric: 'faq_shell_timing',
+        entrypoint: entrypoint.getStore() ?? 'http-api',
         ...state.fields,
         requestId: /^[A-Za-z0-9_+=./:-]{1,128}$/.test(options.requestId) ? options.requestId : null,
         coldStart: options.coldStart === true,

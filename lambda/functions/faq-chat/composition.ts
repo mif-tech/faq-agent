@@ -32,8 +32,8 @@ export function createFaqComposition(): FaqComposition {
     // The canonical free profile changes retrieval/generation only. Settings and Q&A logs
     // retain the production storage/config contract. The public overlay supplies its lite
     // storage and named-agent resolver; canonical production keeps the resolver fail closed.
-    const { storage, agentConfig } = createProductionFaqPorts();
-    return { ports: { ...createFreeFaqPorts(), storage, agentConfig } };
+    const { storage, agentConfig, inflight } = createProductionFaqPorts();
+    return { ports: { ...createFreeFaqPorts(), storage, agentConfig, inflight } };
   }
   if (profile === 'remote') {
     const transport = readRemoteFaqTransport();

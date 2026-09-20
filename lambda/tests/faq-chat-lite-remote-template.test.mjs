@@ -43,6 +43,32 @@ const templateDocument = parseDocument(templateSource, {
 });
 const template = templateDocument.toJS({ maxAliasCount: 0 });
 
+test('FAQ shell Timeout accepts canonical integers from 10 to 300 and retains its existing default', () => {
+  const parameter = template.Parameters.FaqChatFunctionTimeoutSeconds;
+  assert.equal(parameter.Type, 'String');
+  assert.equal(parameter.Default, '28');
+  assert.equal(parameter.AllowedPattern, '^(?:[1-9][0-9]|[12][0-9]{2}|300)$');
+  assert.match(parameter.ConstraintDescription, /integer from 10 to 300 without leading zeros/);
+  assert.equal(parameter.MinValue, undefined);
+  assert.equal(parameter.MaxValue, undefined);
+  const integerPattern = new RegExp(parameter.AllowedPattern, 'u');
+  for (const valid of [parameter.Default, '10', '47', '300']) {
+    assert.equal(integerPattern.test(valid), true);
+  }
+  for (const invalid of ['', ' ', '0', '9', '301', '028', '20000.5', '28.0', '-1', '+28', '2e1', ' 28', '28 ']) {
+    assert.equal(integerPattern.test(invalid), false, `Timeout must reject ${JSON.stringify(invalid)}`);
+  }
+  assert.deepEqual(template.Resources.FaqChatFunction.Properties.Timeout, {
+    Ref: 'FaqChatFunctionTimeoutSeconds',
+  });
+  assert.equal(
+    Object.keys(template.Resources.FaqChatFunction.Properties.Environment.Variables)
+      .some((name) => /REMAINING_MS|RESPONSE_RESERVE_MS|FUNCTION_TIMEOUT/.test(name)),
+    false,
+    'the shell budget must still derive from Lambda context rather than timeout env settings'
+  );
+});
+
 function withParameterDefaults(overrides = {}) {
   return {
     ...Object.fromEntries(
@@ -287,6 +313,8 @@ test('FAQ Q&A webhook is an optional secret wired only to the FAQ sender and wor
   });
 
   const environmentBindings = Object.entries(template.Resources)
+    .filter(([, resource]) => !resource.Condition ||
+      evaluate(template.Conditions[resource.Condition], withParameterDefaults()))
     .filter(([, resource]) =>
       Object.hasOwn(
         resource.Properties?.Environment?.Variables ?? {},
@@ -356,6 +384,8 @@ test('FAQ Q&A retention accepts zero days and is wired only to the FAQ function'
   }
 
   const environmentBindings = Object.entries(template.Resources)
+    .filter(([, resource]) => !resource.Condition ||
+      evaluate(template.Conditions[resource.Condition], withParameterDefaults()))
     .filter(([, resource]) =>
       Object.hasOwn(
         resource.Properties?.Environment?.Variables ?? {},
@@ -381,7 +411,11 @@ test('FAQ DynamoDB IAM maps each allowed action to exactly the required table AR
   const dynamodbStatements = statements.filter((statement) =>
     actions(statement).some((action) => action.startsWith('dynamodb:'))
   );
-  const expectedActions = [...new Set(TABLE_CONTRACTS.map(({ action }) => action))];
+  const iamContracts = [
+    ...TABLE_CONTRACTS,
+    { action: 'dynamodb:UpdateItem', logicalId: 'SettingsTable' },
+  ];
+  const expectedActions = [...new Set(iamContracts.map(({ action }) => action))];
   assert.equal(dynamodbStatements.length, expectedActions.length);
 
   for (const action of expectedActions) {
@@ -394,10 +428,17 @@ test('FAQ DynamoDB IAM maps each allowed action to exactly the required table AR
     assert.deepEqual(actions(statement), [action]);
     assert.deepEqual(
       resources(statement),
-      TABLE_CONTRACTS.filter((contract) => contract.action === action).map(
+      iamContracts.filter((contract) => contract.action === action).map(
         ({ logicalId }) => ({ 'Fn::GetAtt': [logicalId, 'Arn'] })
       )
     );
+    if (action === 'dynamodb:UpdateItem') {
+      assert.deepEqual(statement.Condition, {
+        'ForAllValues:StringLike': {
+          'dynamodb:LeadingKeys': ['faq_inflight_slot#*'],
+        },
+      });
+    }
   }
 
   const allActions = statements.flatMap(actions).sort();
@@ -405,17 +446,17 @@ test('FAQ DynamoDB IAM maps each allowed action to exactly the required table AR
     'dynamodb:GetItem',
     'dynamodb:PutItem',
     'dynamodb:Scan',
+    'dynamodb:UpdateItem',
     'sts:AssumeRole',
   ]);
   for (const forbiddenAction of [
     'dynamodb:DeleteItem',
-    'dynamodb:UpdateItem',
     'dynamodb:BatchWriteItem',
   ]) {
     assert.equal(allActions.includes(forbiddenAction), false);
   }
   assert.equal(allActions.some((action) => action.includes('*')), false);
-  assert.doesNotMatch(JSON.stringify(policies), /\*/u);
+  assert.doesNotMatch(JSON.stringify(statements.flatMap(resources)), /\*/u);
 });
 
 test('candidate table, environment, and IAM contracts contain no canonical prod table names', () => {

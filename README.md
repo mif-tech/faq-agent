@@ -148,6 +148,96 @@ sam deploy \
 
 ⚠️ `sam deploy --guided` は `NoEcho` パラメータ（`AnthropicApiKey`・`FaqRemoteRagExternalId`・`FaqQaNotifyWebhookUrl`・Slack の secret 2値）の入力を、既定値の表示なしで求めます。SAM CLI のバージョンによっては空のまま進められないため、これらを使わない最小デプロイでは上記の非対話コマンド（未指定のパラメータは既定の空になり、QAログ表 `{Environment}-{FaqTableNamespace}-SlackQaLogs` を除く Slack リソースは作成されません）を推奨します。`--guided` を使う場合も「Save arguments to configuration file」で secret を `samconfig.toml` に保存しないでください。
 
+### FAQ の時間予算
+
+| 設定 | 既定値 | 解釈 |
+| --- | --- | --- |
+| SAM `FaqChatFunctionTimeoutSeconds` | 28 秒 | FAQ shell Lambda の Timeout。10〜300秒のASCII十進整数のみ受理し、先頭ゼロ・符号・空白・小数・指数表記は拒否 |
+| `faq/config.js` の `requestTimeoutMs` | 40000 ms | UI の要求全体の待機上限。正の整数の数値を指定（最大2147483647 ms）。未設定・文字列・小数・範囲外などの不正値は40000 ms |
+
+shell は Lambda context の残時間から返却余白2500 msを引いて remote の残予算を決めます。remote-v1 の `remainingMs` 契約上限60000 msは維持し、Timeout を環境変数へ重複設定しません。UI の設定は公開版の `faq/config.js` にも40000 msで同梱します。正本の frontend 設定生成スクリプトもこの値を `faq/config.local.js` へ引き継ぎます。
+
+この変更は設定化だけで、HTTP API の統合時間上限や現在の既定値は変更しません。Lambda と UI の値だけを延長しても入口の制限は解消されません。時間延長は PR4 の段階切替と同時に行います。
+
+### 公開 REST STREAM 経路（PR3・既定 OFF）
+
+`FaqRestStreamApiEnabled=true` を指定すると、Regional REST API と専用の
+`FaqChatStreamFunction` が追加されます。既定の `false` では REST API、専用関数、
+呼び出し権限、Gateway Responses、REST 用 Output は生成しません。従来の HTTP API と
+`FaqApiUrl` は常設のままです。追加経路は `POST` / `OPTIONS /faq-chat` および
+`POST` / `OPTIONS /agents/{agentId}/faq-chat` を扱い、各メソッドの throttle は
+2 requests/秒・burst 5 です。OPTIONS は既存 handler の CORS ヘッダを使い、
+Gateway の 4xx/5xx にも `FaqChatCorsOrigin` を返します。
+
+REST API の Lambda proxy 統合は `responseTransferMode=STREAM` を使います。
+`bootstrap.streamHandler` が REST v1 event を既存 handler の v2 event へ変換し、
+完成した JSON 応答を `awslambda.HttpResponseStream.from` のステータス・ヘッダ付き
+prelude と本文1回で出力します。UI の逐次表示や封筒契約の変更はありません。
+統合時間は `FaqRestStreamIntegrationTimeoutSeconds`（既定70秒）で指定し、
+許容値は1・5・10・20・29・30・45・60・70・90・120・180・240・300・600・900秒です。
+AWS の STREAM 統合上限は900秒（15分）、Regional の idle timeout は300秒です。
+この段階では完成 JSON まで書き出さないため、長時間設定時も idle timeout が別の上限になります。
+Lambda の `FaqChatFunctionTimeoutSeconds=28` 秒、UI の40000 ms、remote の既存予算は
+延長しません。[AWS の STREAM 制約](https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode.html)と
+[Lambda 統合形式](https://docs.aws.amazon.com/apigateway/latest/developerguide/response-transfer-mode-lambda.html)を参照してください。
+
+有効時の `FaqRestStreamApiUrl` は stage を含む base URL です。末尾に `/faq-chat` を
+1回結合して使います。専用関数は従来と別の IAM role を持つため、remote 利用時は
+`FaqChatStreamCallerRoleArn` を MIF 側の invoker role の信頼対象に登録する準備も必要です。
+同じ `FaqRemoteRagRoleArn`・External ID・環境変数・IAM policy を設定するだけでは、
+新しい caller role の信頼は追加されません。
+
+公開 lite の UI 切替は、PR4 の検証を完了してから次の手動手順で行います。
+正本の `generate-frontend-env.sh` は公開配布に含まれず、この切替には使えません。
+tenant chatops 側の対応には、正本 `lambda/template.yaml` に同じパラメータと Output を追加する別 PR が必要です。
+
+1. 配信中の `faq/config.js` と `faq/index.html`、旧 API URL / origin を退避し、対象の公開 lite stack から新旧の Output を取得します。`STACK_NAME` / `REGION` は対象 stack に置き換えます。`FaqRestStreamApiUrl` が空または `None` なら切替を中止します。
+
+   ```bash
+   aws cloudformation describe-stacks --stack-name STACK_NAME --region REGION \
+     --query "Stacks[0].Outputs[?OutputKey=='FaqRestStreamApiUrl'].OutputValue | [0]" --output text
+   aws cloudformation describe-stacks --stack-name STACK_NAME --region REGION \
+     --query "Stacks[0].Outputs[?OutputKey=='FaqApiUrl'].OutputValue | [0]" --output text
+   ```
+
+2. 配信中の設定を基に `faq/config.js` の `apiBaseUrl` だけを `FaqRestStreamApiUrl` の値（stage を含み、末尾スラッシュなし）に差し替えます。ここでは `/faq-chat` を付けません。`faq/index.html` の CSP `connect-src` も同じ URL の origin（`https://ホスト名`、stage なし）に差し替えます。
+3. FAQ UI の既存配信先で、該当する2ファイルだけを更新します。次の例は bucket 直下での配信です。prefix 配下で配信している場合は既存の2キーを指定してください。**bucket 全面 sync は禁止**です。
+
+   ```bash
+   aws s3 cp faq/config.js s3://FAQ_UI_BUCKET/config.js --content-type application/javascript
+   aws s3 cp faq/index.html s3://FAQ_UI_BUCKET/index.html --content-type text/html
+   ```
+
+   CloudFront などでキャッシュしている場合は、この2ファイルのキャッシュを更新してから、ブラウザの送信先と CSP、FAQ 応答を確認します。
+4. 切り戻しでは `apiBaseUrl` を記録した旧 HTTP API URL に、CSP `connect-src` を旧 origin に戻し、同じ2ファイルだけを再配信・確認します。公開 lite の旧 URL は `FaqApiUrl` です（正本 tenant chatops の同等 Output 名は `ApiEndpoint`）。旧経路を絞った後は、切り戻し前に旧経路の throttle / events も復元します。
+
+PR4 の有効化・切替チェックリスト:
+
+- **検証ステージで一度 `FaqRestStreamApiEnabled=true` の CreateStack まで通してから本番切替する**（正本 `CLAUDE.md` の「最初の有効化は必ず検証ステージから」に従う）。`Fn::If` 方式は検証 stack の CreateStack で `timeoutInMillis: 70000`（整数）・`responseTransferMode: STREAM`・既存封筒と同一の応答バイトを確認済みです（本番切替前に自分の検証ステージでも同じ確認を行ってください）。実機で確認したのは70秒分岐のみで、他の分岐はテストで固定した構造同一性に依存するため、配布先の検証ステージでは切替に使う値で再確認してください。`sam build` / `sam validate --lint`、ローカル SAM 変換後のテンプレートテスト、read-only の `aws cloudformation validate-template` だけでは、CloudFormation 側の Processed template や `responseTransferMode: STREAM` の実配備を確認できません。新規検証 stack の Processed template で4経路の `timeoutInMillis` を確認し、整数として受理され、実際の STREAM 応答が既存封筒を保つことを確認します。
+- 併存前に `FaqMaxInflight` を正の値（1〜10）に設定し、両関数の `FAQ_MAX_INFLIGHT` リースを有効にします。`FaqChatStreamFunction` に `ReservedConcurrentExecutions` はなく、共有する同時処理ガードはこのリースだけです（既定0は無効）。
+- 併存中の throttle は API 単位で独立します。同じ FAQ route の実効レート上限は2系統合計 **4 rps / burst 10**（各2 rps / burst 5）になるため、両方への流入と共有リースの拒否を確認します。
+- remote 利用時は `FaqChatStreamCallerRoleArn` の trust / External ID を確認し、UI の手動切替と時間予算の延長を検証します。
+- 単位を ms に揃えて `Lambda Timeout（FaqChatFunctionTimeoutSeconds × 1000）< UI requestTimeoutMs < REST 統合 timeout`、かつ全体 < Regional idle 300s を常に満たします。`FaqChatFunctionTimeoutSeconds` だけを延ばすと UI が先に abort して30秒撤廃の効果が消えます。
+- 切替後に旧 HTTP API 経路を絞る／止める段取りを用意します。旧 `FaqHttpApi.RouteSettings` の該当 route の throttle を下げる、または旧 HTTP API の events を外す別 PR で対応し、切り戻しに必要な設定を記録します。UI の送信先変更だけでは旧公開入口は止まりません。
+
+統合時間は、秒パラメータを `Conditions` の `Fn::Equals` で比較し、4経路それぞれの
+`Fn::If` の連鎖で整数ミリ秒リテラルを返します。既存の許容値16個と既定70秒を維持し、
+最後の分岐は `AllowedValues` により900秒だけが残るため900000を返します。
+`Fn::FindInMap` 方式は検証 stack の CreateStack で引数解決エラーになったため廃止しました。
+[CloudFormation の `Fn::If`](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/intrinsic-function-reference-conditions.html#intrinsic-function-reference-conditions-if)
+はリソースのプロパティ値とネストをサポートしています。
+[ネイティブ CFN の Integration](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-apigateway-method-integration.html)
+にも `ResponseTransferMode: STREAM` はありますが、既存 SAM の stage・deployment・Gateway Responses を
+維持し、修正を時間変換に限定するため `Fn::If` 方式を採用しています。
+テンプレートテストで許容値と条件・整数リテラルの対応、SAM 変換後の全許容値と4経路、
+既定 OFF 時に REST 一式が生成されないことを固定します。
+
+監視は専用 Lambda の CloudWatch `Invocations`・`Duration`・`Errors`・`Throttles` と、
+REST API の CloudWatch `Count`・`4XXError`・`5XXError`・`Latency`・`IntegrationLatency` を
+API/stage 単位で確認します。`faq_shell_timing.entrypoint=rest-stream`（旧入口は `http-api`）で
+shell のログを分け、Gateway 側で止まった429/5xxと Lambda 内の障害を照合します。
+`faq_chat` メトリクスの既存フィールドは不変です。
+
 ### FAQ Q&A の Slack 通知（任意）
 
 SAM parameter `FaqQaNotifyWebhookUrl` に Slack Incoming Webhook URL を秘密管理されたデプロイ入力から渡すと、Q&A ログの DynamoDB 保存成功後に通知します。受理するのは標準の `https://hooks.slack.com/services/{workspace}/{channel}/{secret}` 形式（3つの path segment は ASCII 英数字のみ）です。userinfo、独自 port、query、fragment、segment の不足・追加を含む URL は固定 warn を残して送信せず、HTTP redirect も追従しません。未指定（既定の空文字）では通知fetchは発生しません。この機能は下記 Slack bot の有効化条件や資格情報とは独立しています。DynamoDB の Q&A ログが正本であり、Slack 通知は補助経路です。`FaqQaNotifyAsyncEnabled=false`（既定）では従来の同期best-effort配送を維持し、`true` では保存した行を専用workerが再試行付きで配送します。
@@ -175,6 +265,28 @@ Streamsの保持は24時間で、SQS失敗宛先には通常、元レコード�
 workerの固定ログ `faq_qa_notify_worker outcome=success|duplicate|failure` とDLQを照合します。公開workerは通知だけを担当し、恒久アーカイブ・非公開RAG・prompt・KBへのアクセスはありません。計測フィールドの定義は[公開shell telemetry](lambda/functions/faq-chat/adapters/remote/README.md#terminal-shell-timing-fields)を参照してください。
 
 既存の応答メトリクス `faq_chat` は応答確定時点で出力し、shell の終端計測は別の `faq_shell_timing` 行として同じ request ID で関連付けます。メトリクスフィルタは部分文字列検索ではなく `{ $.metric = "faq_chat" }` の完全一致を使ってください。Lambda のハードタイムアウトでは終端行が出ない場合があります。
+
+### FAQ の処理枠（既定無効）
+
+SAM パラメータ `FaqMaxInflight` は環境変数 `FAQ_MAX_INFLIGHT` に配線され、整数 0〜10 を受理します。
+既定の `0` は無効で、処理枠の DynamoDB I/O は発生しません。有効化と枠数の決定は PR4 の段階切替で行います。
+既存の公開 API Gateway throttle（2 rps / burst 5）も維持します。
+
+有効時は Settings テーブルの `key=faq_inflight_slot#<i>` に条件付き UpdateItem で期限付きリースを取得します。
+新しいテーブルや Settings の Key/TTL 変更はなく、追加 IAM は Settings だけの UpdateItem です。
+入力検証・Settings 読込み後、Claude router と KB 検索より前に取得し、Claude / remote を呼ばない
+`template_only` の即答・確定 refuse は枠を取りません。DynamoDB のない local adapter も無効です。
+リースは Lambda context の残時間から算出し、caller deadline や返却余白を引きません。
+正常終了・例外・timeout の解放は ownerToken 一致条件付きの best-effort で、失敗しても `leaseUntil` により自然回収されます。
+
+全枠が満杯なら待たずに HTTP **429**、`Retry-After: 5`、本文 `{ "error": "busy", "retryable": true }` を返します。
+CORS ヘッダは既存応答と同じです。remote の `busy` DTO（`retryable: true`）も同じ429に変換し、
+`Retry-After` は `retryAfterMs` を秒へ切り上げた値を1〜60秒に制限して返します。shell 自身の枠満杯時は5秒です。
+refuse 封筒にしません。UI は既存の429分岐をそのまま使います。日次制限の `quota_exceeded` とは別のエラーです。
+
+終端メトリクス `faq_shell_timing` に `inflight_outcome`（`acquired` / `busy` / `disabled`）、
+`inflight_slot`（番号または null）、`inflight_acquire_ms`、`inflight_release_outcome` を追加します。
+既存 `faq_chat` メトリクスは変更しません。
 
 ### Slack bot（フリー版）
 
@@ -246,11 +358,24 @@ aws cloudformation describe-stacks \
 | --- | --- | --- | --- |
 | `FaqPortsProfile` | `free` | `remote` | RAG 実装の選択。公開 lite ではこの2値だけを受け付けます。 |
 | `FaqRemoteRagTransport` | `split-v1`（既定） | `split-v1`（既定）または `one-shot-v1` | remote の HTTP 契約。one-shot は `POST /v1/answer` を1回だけ呼びます。 |
-| `FaqRemoteRagBaseUrl` | 空 | 必須 | MIF Remote RAG API の HTTPS Base URL。operation suffix は含めません。 |
+| `FaqRemoteRagBaseUrl` | 空 | 必須 | MIF Remote RAG API の HTTPS Base URL。既存 API Gateway または IAM 認証 Lambda Function URL を指定でき、operation suffix は含めません。 |
 | `FaqRemoteRagRoleArn` | 空 | 必須 | MIF が提示した cross-account invoker role の完全な IAM role ARN。 |
 | `FaqRemoteRagExternalId` | 空 | 必須 | MIF trust policy と一致する tenant 固有 ExternalId。2〜1224文字の STS 許可文字だけを受け付け、CloudFormation では `NoEcho` です。 |
 
 transport はデプロイ時の `FaqRemoteRagTransport` → `FAQ_REMOTE_RAG_TRANSPORT` だけで選択し、`FAQ_PORTS_PROFILE=remote` のときだけ読みます。Settings やリクエストからは変更できません。既定の `split-v1` を維持し、one-shot は MIF 側の有効化と品質・性能評価が完了してから opt-in します。ロールバックは `FaqRemoteRagTransport=split-v1` での再デプロイです。
+
+署名 service は `FaqRemoteRagBaseUrl` → `FAQ_REMOTE_RAG_BASE_URL` のホスト名から自動判定します。
+`^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$` に完全一致する Function URL は `lambda`、
+それ以外は従来どおり `execute-api` です。署名 service を上書きする環境変数・SAM パラメータは設けません。
+標準の Function URL / API Gateway ホストの region が shell の `AWS_REGION` と異なる場合は、
+credential 取得や HTTP 呼出し前に構成エラーで停止します。custom domain の region は推定しません。
+リクエスト先は引き続き `${baseUrl}/v1/${operation}` で、DTO・時間予算・transport の既定値は変わりません。
+
+Function URL は入口追加のみで、既存 API Gateway からの切替は PR4 です。切替・切り戻しの運用手順は
+PR4 で確定し、切替時は MIF が提示する URL を `FaqRemoteRagBaseUrl` に指定、切り戻しは記録した
+API Gateway Base URL に戻します。MIF 側の引受先 role に対象 v1 関数限定の `lambda:InvokeFunctionUrl` と
+`lambda:InvokedViaFunctionUrl=true` 条件付き `lambda:InvokeFunction` が必要です。
+lite caller role の権限は引き続き exact role への `sts:AssumeRole` のみです。
 
 ### 既存利用者の one-shot 切替手順
 

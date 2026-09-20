@@ -3,11 +3,12 @@ import { dynamoDbFaqAgentConfig } from './free/agent-config.js';
 import { dynamoDbFaqKbSource } from './free/dynamodb-entries.js';
 import type { FaqPorts } from '../ports/index.js';
 import type { FaqChatSettings, FaqStoragePort } from '../ports/storage.js';
-import { getItem, LiteTableNames, putItem } from '../infra/lite-dynamodb.js';
+import { getItem, liteDocumentClient, LiteTableNames, putItem } from '../infra/lite-dynamodb.js';
 import { createRemoteFaqRagHttpClient } from './remote/http-client.js';
 import { createRemoteFaqRagAnswerHttpClient } from './remote/http-client.js';
 import { notifyFaqQaLog } from './faq-qa-slack-notify.js';
 import { recordFaqQaNotifyOutcome } from '../shell-timing.js';
+import { createDynamoFaqInflightPort } from './inflight.js';
 
 interface FaqSettingRow {
   key: string;
@@ -61,6 +62,7 @@ const storage: FaqStoragePort = {
 export function createProductionFaqAdapters(): ProductionFaqAdapters {
   return {
     ...createFreeFaqPorts({ kbSource: dynamoDbFaqKbSource }),
+    inflight: createDynamoFaqInflightPort({ client: liteDocumentClient, tableName: LiteTableNames.Settings }),
     agentConfig: dynamoDbFaqAgentConfig,
     storage,
   };

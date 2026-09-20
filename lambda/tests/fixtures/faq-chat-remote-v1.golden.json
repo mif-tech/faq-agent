@@ -197,6 +197,16 @@
       ]
     }
   },
+  "busy": {
+    "retrieve": {
+      "statusCode": 429,
+      "body": "{\"contractVersion\":\"remote-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}"
+    },
+    "generate": {
+      "statusCode": 429,
+      "body": "{\"contractVersion\":\"remote-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}"
+    }
+  },
   "errorCatalog": [
     "no_match",
     "expired_token",
@@ -205,6 +215,7 @@
     "invalid_contract",
     "deadline_exceeded",
     "retrieval_failed",
-    "generation_failed"
+    "generation_failed",
+    "busy"
   ]
 }
