@@ -12,6 +12,7 @@ export const FAQ_RAG_ERROR_CODES = [
   'deadline_exceeded',
   'retrieval_failed',
   'generation_failed',
+  'busy',
 ] as const;
 
 export type FaqRagErrorCode = (typeof FAQ_RAG_ERROR_CODES)[number];
@@ -20,6 +21,7 @@ export type FaqRagError =
   | { code: 'no_match'; retryable: false }
   | { code: 'expired_token'; retryable: true }
   | { code: 'quota_exceeded'; retryable: true; retryAfterMs: number }
+  | { code: 'busy'; retryable: true; retryAfterMs: number }
   | { code: 'kill_switch'; retryable: true }
   | { code: 'invalid_contract'; retryable: false }
   | { code: 'deadline_exceeded'; retryable: true }

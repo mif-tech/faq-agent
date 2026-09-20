@@ -36,6 +36,7 @@ test('synthetic request and all response envelopes preserve frozen UTF-8 bytes',
   const expectedStatus = {
     no_match: 404, invalid_contract: 400, quota_exceeded: 429, kill_switch: 503,
     deadline_exceeded: 504, retrieval_failed: 502, generation_failed: 502,
+    busy: 429,
   };
   assert.deepEqual(REMOTE_ONE_SHOT_ANSWER_ERROR_CODES, Object.keys(expectedStatus));
   for (const entry of golden.responses) {
@@ -93,6 +94,23 @@ test('request shares split code point, message suffix, hints and safe integer bo
   ]) invalid(parseRequest, { ...request(), hints });
 });
 
+test('busy retry delay accepts the same bounded positive safe integers as split responses', () => {
+  const response = (retryAfterMs) => ({
+    contractVersion: FAQ_RAG_ANSWER_CONTRACT_VERSION,
+    ok: false,
+    error: { code: 'busy', retryable: true, retryAfterMs },
+  });
+  for (const retryAfterMs of [1, 5_000, 60_000, 86_400_000]) {
+    assert.deepEqual(parseResponse(response(retryAfterMs)), response(retryAfterMs));
+  }
+  for (const retryAfterMs of [
+    undefined, 0, -1, 1.5, 86_400_001, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '5000',
+  ]) invalid(parseResponse, response(retryAfterMs));
+  const missingRetry = response(5_000);
+  delete missingRetry.error.retryAfterMs;
+  invalid(parseResponse, missingRetry);
+});
+
 test('response rejects transport ambiguity, token errors and inconsistent retry metadata', () => {
   for (const entry of golden.responses) {
     const parsed = JSON.parse(entry.body);
@@ -101,7 +119,7 @@ test('response rejects transport ambiguity, token errors and inconsistent retry 
     if (!parsed.ok) {
       invalid(parseResponse, { ...parsed, error: { ...parsed.error, retryable: !parsed.error.retryable } });
       invalid(parseResponse, { ...parsed, error: { ...parsed.error, provider: undefined } });
-      if (parsed.error.code === 'quota_exceeded') {
+      if (parsed.error.code === 'quota_exceeded' || parsed.error.code === 'busy') {
         for (const retryAfterMs of [undefined, 0, -1, 1.5, 86400001, '1000']) {
           invalid(parseResponse, { ...parsed, error: { ...parsed.error, retryAfterMs } });
         }

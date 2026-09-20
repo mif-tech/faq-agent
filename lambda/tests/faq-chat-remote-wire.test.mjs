@@ -59,6 +59,7 @@ const EXPECTED_ERROR_CODES = [
   'deadline_exceeded',
   'retrieval_failed',
   'generation_failed',
+  'busy',
 ];
 const EXPECTED_RETRIEVE_ERROR_CODES = [
   'no_match',
@@ -67,6 +68,7 @@ const EXPECTED_RETRIEVE_ERROR_CODES = [
   'invalid_contract',
   'deadline_exceeded',
   'retrieval_failed',
+  'busy',
 ];
 const EXPECTED_GENERATE_ERROR_CODES = [
   'expired_token',
@@ -75,6 +77,7 @@ const EXPECTED_GENERATE_ERROR_CODES = [
   'invalid_contract',
   'deadline_exceeded',
   'generation_failed',
+  'busy',
 ];
 const EXPECTED_RETRYABLE = {
   no_match: false,
@@ -85,6 +88,7 @@ const EXPECTED_RETRYABLE = {
   deadline_exceeded: true,
   retrieval_failed: true,
   generation_failed: true,
+  busy: true,
 };
 
 const PRIVATE_CANARIES = [
@@ -161,6 +165,7 @@ function errorResponse(code, overrides = {}) {
       code,
       retryable: EXPECTED_RETRYABLE[code],
       ...(code === 'quota_exceeded' ? { retryAfterMs: 60_000 } : {}),
+      ...(code === 'busy' ? { retryAfterMs: 5_000 } : {}),
       ...overrides,
     },
   };
@@ -212,7 +217,18 @@ test('all golden wire DTOs pass the matching strict validator', () => {
   }
 });
 
-test('error catalog, operation sets, retryability, and retry delay are fixed', () => {
+test('busy retrieve/generate golden additions preserve exact UTF-8 response bytes', () => {
+  for (const [operation, parser] of [
+    ['retrieve', parseRemoteV1RetrieveResponse],
+    ['generate', parseRemoteV1GenerateResponse],
+  ]) {
+    const golden = fixture.busy[operation];
+    assert.equal(golden.statusCode, 429);
+    assert.deepEqual(Buffer.from(JSON.stringify(parser(JSON.parse(golden.body)))), Buffer.from(golden.body));
+  }
+});
+
+test('error catalog, operation sets, retryability, and retry delay bounds are fixed', () => {
   assert.deepEqual(fixture.errorCatalog, EXPECTED_ERROR_CODES);
   assert.deepEqual([...FAQ_RAG_ERROR_CODES], EXPECTED_ERROR_CODES);
   assert.deepEqual([...REMOTE_V1_RETRIEVE_ERROR_CODES], EXPECTED_RETRIEVE_ERROR_CODES);
@@ -237,7 +253,7 @@ test('error catalog, operation sets, retryability, and retry delay are fixed', (
       }
       assert.deepEqual(parser(dto), dto);
       assertInvalid(parser, errorResponse(code, { retryable: !EXPECTED_RETRYABLE[code] }));
-      if (code === 'quota_exceeded') {
+      if (code === 'quota_exceeded' || code === 'busy') {
         const missingDelay = errorResponse(code);
         delete missingDelay.error.retryAfterMs;
         assertInvalid(parser, missingDelay);
@@ -246,6 +262,13 @@ test('error catalog, operation sets, retryability, and retry delay are fixed', (
           parser,
           errorResponse(code, { retryAfterMs: REMOTE_V1_LIMITS.retryAfterMs + 1 })
         );
+        for (const retryAfterMs of [1, 4_999, 5_001, 60_000, REMOTE_V1_LIMITS.retryAfterMs]) {
+          const withDelay = errorResponse(code, { retryAfterMs });
+          assert.deepEqual(parser(withDelay), withDelay);
+        }
+        for (const retryAfterMs of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity, '5000', null]) {
+          assertInvalid(parser, errorResponse(code, { retryAfterMs }));
+        }
       } else {
         assertInvalid(parser, errorResponse(code, { retryAfterMs: 1 }));
       }

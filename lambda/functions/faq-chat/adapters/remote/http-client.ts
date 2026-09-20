@@ -38,7 +38,6 @@ import {
   parseRemoteV1RetrieveResponse,
 } from './contract.js';
 
-const EXECUTE_API_SERVICE = 'execute-api';
 const ASSUME_ROLE_SESSION_NAME = 'faq-remote-rag-client';
 const DEFAULT_ABORT_SAFETY_MARGIN_MS = 100;
 const DEFAULT_CREDENTIAL_REFRESH_WINDOW_MS = 60_000;
@@ -88,6 +87,7 @@ export interface RemoteFaqRagHttpClientOptions {
 interface RemoteConfig {
   baseUrl: string;
   region: string;
+  signingService: 'execute-api' | 'lambda';
   roleArn?: string;
   externalId?: string;
 }
@@ -184,17 +184,21 @@ function readConfig(env: Readonly<Record<string, string | undefined>>): RemoteCo
     return failConfiguration('AWS_REGION', 'must not contain surrounding whitespace');
   }
 
-  // 署名 region は AWS_REGION（この Lambda 自身の region）。base URL が execute-api の標準ホスト
-  // 形式ならその region と突き合わせ、不一致を config 時に落とす。別 region の API を設定すると
+  // 署名 region は AWS_REGION（この Lambda 自身の region）。base URL が execute-api / Function URL
+  // の標準ホスト形式ならその region と突き合わせ、不一致を config 時に落とす。別 region の API を設定すると
   // 全リクエストが SigV4 署名不一致で 403 → retrieval_failed → fallback に写像され、設定ミスと
   // 区別できなくなるため fail-fast する（B2 レビュー指摘1。custom domain は region を推定できず対象外）。
   const executeApiHost = /^[^.]+\.execute-api\.([^.]+)\.amazonaws\.com$/.exec(
     parsedBaseUrl.hostname
   );
-  if (executeApiHost !== null && executeApiHost[1] !== region) {
+  const functionUrlHost = /^[a-z0-9]+\.lambda-url\.([a-z0-9-]+)\.on\.aws$/.exec(
+    parsedBaseUrl.hostname
+  );
+  const hostRegion = functionUrlHost?.[1] ?? executeApiHost?.[1];
+  if (hostRegion !== undefined && hostRegion !== region) {
     return failConfiguration(
       'FAQ_REMOTE_RAG_BASE_URL',
-      `host region (${executeApiHost[1]}) must match AWS_REGION (${region})`
+      `host region (${hostRegion}) must match AWS_REGION (${region})`
     );
   }
 
@@ -235,6 +239,7 @@ function readConfig(env: Readonly<Record<string, string | undefined>>): RemoteCo
   return {
     baseUrl: parsedBaseUrl.href.replace(/\/$/, ''),
     region,
+    signingService: functionUrlHost === null ? 'execute-api' : 'lambda',
     ...(roleArn === undefined ? {} : { roleArn }),
     ...(externalId === undefined ? {} : { externalId }),
   };
@@ -507,7 +512,7 @@ function retrieveDtoRetryDelay(response: FaqRagRetrieveResponse): number | undef
   if (response.ok) return undefined;
   if (response.error.code === 'retrieval_failed') return 0;
   if (response.error.code === 'quota_exceeded') return response.error.retryAfterMs;
-  // kill_switch and deadline_exceeded are retryable by a later workflow, but an immediate
+  // busy, kill_switch and deadline_exceeded are retryable by a later workflow, but an immediate
   // in-request retry is not useful. no_match/invalid_contract are explicitly final.
   return undefined;
 }
@@ -615,7 +620,7 @@ export function createRemoteFaqRagHttpClient(
       const signer = new SignatureV4({
         credentials: resolvedCredentials,
         region: config.region,
-        service: EXECUTE_API_SERVICE,
+        service: config.signingService,
         sha256: Sha256,
       });
       let signedHeaders: Record<string, string>;
@@ -812,6 +817,7 @@ const ANSWER_HTTP_STATUS: Readonly<Record<RemoteOneShotAnswerErrorCode, number>>
   deadline_exceeded: 504,
   retrieval_failed: 502,
   generation_failed: 502,
+  busy: 429,
 };
 
 function answerClientError(
@@ -916,7 +922,7 @@ export function createRemoteFaqRagAnswerHttpClient(
           try {
             const signer = new SignatureV4({
               credentials: resolvedCredentials, region: config.region,
-              service: EXECUTE_API_SERVICE, sha256: Sha256,
+              service: config.signingService, sha256: Sha256,
             });
             signedHeaders = (await measureAttemptStep(
               timing, 'signing_ms', now, () => signer.sign(requestForSigning(url, body)), controller.signal

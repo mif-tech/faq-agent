@@ -156,6 +156,8 @@ const SERVICE_UNAVAILABLE_MESSAGE =
   'ただいま混み合っております。しばらくしてからもう一度お試しください。';
 const TECHNICAL_FALLBACK_MESSAGE =
   '申し訳ありません。一時的に回答を生成できませんでした。お手数ですが、もう一度お試しください。';
+const TECHNICAL_FALLBACK_BODY =
+  `{"answer":"${TECHNICAL_FALLBACK_MESSAGE}","answerable":false,"sources":[],"responseType":"refuse","failureKind":"envelope_invalid","retryable":true}`;
 const TEST_CONTEXT = {
   getRemainingTimeInMillis: () => 30_000,
 };
@@ -850,6 +852,8 @@ test('max_tokens 切断: 現行分岐の200・generation_incompleteを固定す�
   });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body,
+    `{"answer":"${TECHNICAL_FALLBACK_MESSAGE}","answerable":false,"sources":[],"responseType":"refuse","failureKind":"generation_incomplete","retryable":true}`);
   assert.deepEqual(body, {
     answer: TECHNICAL_FALLBACK_MESSAGE,
     answerable: false,
@@ -875,6 +879,7 @@ test('不正 envelope: 現行ガードの200・envelope_invalidを固定する',
   });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
   assert.deepEqual(body, {
     answer: TECHNICAL_FALLBACK_MESSAGE,
     answerable: false,
@@ -885,6 +890,29 @@ test('不正 envelope: 現行ガードの200・envelope_invalidを固定する',
   });
   assert.equal(ports.storage.qaLogs.length, 1);
   assert.equal(ports.storage.qaLogs[0].guardDetail, 'envelope_parse_failed');
+});
+
+test('ローカル生成の残余予算不足: モデルを呼ばず200・time_budgetの応答バイトを保つ', async () => {
+  const ports = createStubFaqPorts({
+    entries: [NORMAL_ENTRY],
+    retrieval: 'normal',
+    answerGeneration: 'envelope',
+  });
+  __setFaqPortsForTest(ports);
+
+  const { response, captured } = await invoke(
+    { messages: [{ role: 'user', content: '料金について知りたいです' }] },
+    { getRemainingTimeInMillis: () => 4_999 }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body,
+    `{"answer":"${TECHNICAL_FALLBACK_MESSAGE}","answerable":false,"sources":[],"responseType":"refuse","failureKind":"time_budget","retryable":true}`);
+  assert.equal(ports.retrieval.calls.length, 1);
+  assert.equal(ports.answerGeneration.calls.length, 0);
+  assert.equal(ports.storage.qaLogs[0].route, 'refuse_time_budget');
+  assert.equal(lastFaqMetric(captured).failure_kind, 'time_budget');
+  assert.equal(lastFaqMetric(captured).skipped_model_call, true);
 });
 
 test('無効化: enabled=false は503 dark shipでadapterを呼ばない', async () => {
@@ -1262,6 +1290,8 @@ test('refusal: 200 model_refusal・再試行を促さない（retryable=false・
   const { response, body } = await invoke({ messages: [{ role: 'user', content: '料金について' }] });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body,
+    '{"answer":"スタブ固定フォールバック","answerable":false,"sources":[],"responseType":"refuse","failureKind":"model_refusal","retryable":false}');
   assert.deepEqual(body, {
     answer: 'スタブ固定フォールバック',
     answerable: false,
@@ -1670,8 +1700,9 @@ for (const code of ['no_match', 'remote_transport_unsupported', 'invalid_contrac
       async retrieve() { assert.fail('split retrieve must not be invoked'); },
       async generate() { assert.fail('split generate must not be invoked'); },
     } });
-    const { body, captured } = await invoke({ messages: [{ role: 'user', content: '料金を教えてください' }] });
+    const { response, body, captured } = await invoke({ messages: [{ role: 'user', content: '料金を教えてください' }] });
     assert.equal(calls, 1);
+    if (code !== 'no_match') assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
     assert.equal(body.responseType, 'refuse');
     assert.equal(body.answerable, false);
     assert.equal(body.failureKind, code === 'no_match' ? undefined : 'envelope_invalid');
@@ -1696,6 +1727,7 @@ test('one-shot shell exhausted budget sends no HTTP; a new request receives a fr
   } });
   const options = { messages: [{ role: 'user', content: '料金を教えてください' }] };
   const limited = await invoke(options, { getRemainingTimeInMillis: () => 1_000 });
+  assert.equal(limited.response.body, TECHNICAL_FALLBACK_BODY);
   assert.equal(lastFaqMetric(limited.captured).remote_http_calls, 0);
   assert.equal(lastFaqMetric(limited.captured).remote_ms, 0);
   assert.equal(keys.length, 0);
@@ -1877,6 +1909,7 @@ test('remote profile: generate 最低枠を引いた retrieve 予算が0なら d
   );
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
   assert.equal(body.responseType, 'refuse');
   assert.equal(body.failureKind, 'envelope_invalid');
   assert.equal(body.retryable, true);
@@ -1939,6 +1972,7 @@ test('remote profile: kill_switch は再試行可能な既存技術系 refuse �
   });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
   assert.deepEqual(body, {
     answer: TECHNICAL_FALLBACK_MESSAGE,
     answerable: false,
@@ -1976,6 +2010,7 @@ test('remote profile: invalid_contract は技術系 refuse と値を含まない
   });
 
   assert.equal(response.statusCode, 200);
+  assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
   assert.equal(body.responseType, 'refuse');
   assert.equal(body.failureKind, 'envelope_invalid');
   assert.equal(body.retryable, true);

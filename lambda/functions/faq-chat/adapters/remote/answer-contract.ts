@@ -23,6 +23,7 @@ export const REMOTE_ONE_SHOT_ANSWER_ERROR_CODES = [
   'deadline_exceeded',
   'retrieval_failed',
   'generation_failed',
+  'busy',
 ] as const;
 
 export type RemoteOneShotAnswerErrorCode = (typeof REMOTE_ONE_SHOT_ANSWER_ERROR_CODES)[number];

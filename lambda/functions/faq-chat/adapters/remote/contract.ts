@@ -49,6 +49,9 @@ export const REMOTE_V1_LIMITS = {
  */
 export const REMOTE_V1_GENERATE_BUDGET_FLOOR_MS = 5_000;
 
+/** Reserve caller time after generation for finalizing the response. */
+export const REMOTE_V1_GENERATION_RESERVE_MS = 250;
+
 export const REMOTE_V1_RETRIEVE_ERROR_CODES = [
   'no_match',
   'quota_exceeded',
@@ -56,6 +59,7 @@ export const REMOTE_V1_RETRIEVE_ERROR_CODES = [
   'invalid_contract',
   'deadline_exceeded',
   'retrieval_failed',
+  'busy',
 ] as const satisfies readonly FaqRagErrorCode[];
 
 export const REMOTE_V1_GENERATE_ERROR_CODES = [
@@ -65,6 +69,7 @@ export const REMOTE_V1_GENERATE_ERROR_CODES = [
   'invalid_contract',
   'deadline_exceeded',
   'generation_failed',
+  'busy',
 ] as const satisfies readonly FaqRagErrorCode[];
 
 const ERROR_RETRYABILITY = {
@@ -76,6 +81,7 @@ const ERROR_RETRYABILITY = {
   deadline_exceeded: true,
   retrieval_failed: true,
   generation_failed: true,
+  busy: true,
 } as const satisfies Record<FaqRagErrorCode, boolean>;
 
 const SESSION_TOKEN_PATTERN =
@@ -249,7 +255,7 @@ function error(
   if (retryable !== ERROR_RETRYABILITY[code]) fail(`${field}.retryable`);
 
   const hasRetryAfterMs = hasOwn(object, 'retryAfterMs');
-  if (code === 'quota_exceeded') {
+  if (code === 'quota_exceeded' || code === 'busy') {
     if (!hasRetryAfterMs) fail(`${field}.retryAfterMs`);
     return {
       code,

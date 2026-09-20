@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { FaqPorts } from '../../ports/index.js';
+import { disabledFaqInflightPort } from '../../ports/inflight.js';
 import type { FaqSmalltalkGenerationPort } from '../../ports/generation.js';
 import type { AnthropicGenerationOptions } from './anthropic-generation.js';
 import { createAnthropicGenerationPort } from './anthropic-generation.js';
@@ -61,6 +62,7 @@ export function createFreeFaqPorts(
   const guardBusinessTerms = resolveGuardBusinessTerms(options.guardBusinessTerms);
 
   return {
+    inflight: disabledFaqInflightPort,
     retrieval: createSimpleRetrievalPort({
       loadEntries: (kbAgentId) => {
         const kbSource = options.kbSource ?? dynamoDbFaqKbSource;

@@ -5,6 +5,7 @@ import type {
 } from './generation.js';
 import type { FaqRetrievalPort } from './retrieval.js';
 import type { FaqAgentConfigPort, FaqStoragePort } from './storage.js';
+import type { FaqInflightPort } from './inflight.js';
 
 /**
  * 雑談ガードの決定的語彙（LLM が誤っても効く層）。handler の汎用語彙に**追加**される。
@@ -28,6 +29,7 @@ export interface FaqPorts {
   smalltalkGeneration: FaqSmalltalkGenerationPort;
   answerPrompt: FaqAnswerPromptPolicy;
   storage: FaqStoragePort;
+  inflight: FaqInflightPort;
   /** compositionが有効なプロファイルを明示解決しない限りnamed agentは利用不可。 */
   agentConfig: FaqAgentConfigPort;
   defaultModel: string;

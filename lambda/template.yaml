@@ -161,6 +161,36 @@ Parameters:
     Default: '*'
     Description: Exact browser origin for deployment; wildcard is intended for local trial only
 
+  FaqChatFunctionTimeoutSeconds:
+    Type: String
+    Default: '28'
+    AllowedPattern: '^(?:[1-9][0-9]|[12][0-9]{2}|300)$'
+    ConstraintDescription: Must be an ASCII base-10 integer from 10 to 300 without leading zeros, signs, whitespace, decimal points, or exponents
+    Description: FAQ shell Lambda timeout in seconds; retain 28 until the staged transport migration
+
+  FaqRestStreamApiEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['false', 'true']
+    Description: Create the optional Regional REST streaming entrance; browser migration is a separate rollout
+
+  FaqRestStreamIntegrationTimeoutSeconds:
+    Type: Number
+    Default: 70
+    MinValue: 1
+    MaxValue: 900
+    # When changing AllowedValues, update RestStreamTimeoutIs* conditions and the final else (maximum) in all four Fn::If chains; tests/faq-rest-stream-template.test.mjs locks these together.
+    AllowedValues: [1, 5, 10, 20, 29, 30, 45, 60, 70, 90, 120, 180, 240, 300, 600, 900]
+    Description: REST STREAM integration timeout in seconds; conditions select integer millisecond literals
+
+  FaqMaxInflight:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 10
+    AllowedValues: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    Description: Concurrent FAQ processing leases; 0 disables admission control until the PR4 staged rollout
+
 Rules:
   FaqRemoteProfileRequiresConfiguration:
     RuleCondition: !Equals [!Ref FaqPortsProfile, remote]
@@ -227,6 +257,24 @@ Rules:
         AssertDescription: AnthropicApiKey is required when Slack is enabled
 
 Conditions:
+  HasRestStreamApi: !Equals [!Ref FaqRestStreamApiEnabled, 'true']
+  # Fn::If returns integer literals without FindInMap inside SAM's DefinitionBody.
+  # AllowedValues leaves only 900 seconds for the final 900000 millisecond branch.
+  RestStreamTimeoutIs1: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 1]
+  RestStreamTimeoutIs5: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 5]
+  RestStreamTimeoutIs10: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 10]
+  RestStreamTimeoutIs20: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 20]
+  RestStreamTimeoutIs29: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 29]
+  RestStreamTimeoutIs30: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 30]
+  RestStreamTimeoutIs45: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 45]
+  RestStreamTimeoutIs60: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 60]
+  RestStreamTimeoutIs70: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 70]
+  RestStreamTimeoutIs90: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 90]
+  RestStreamTimeoutIs120: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 120]
+  RestStreamTimeoutIs180: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 180]
+  RestStreamTimeoutIs240: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 240]
+  RestStreamTimeoutIs300: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 300]
+  RestStreamTimeoutIs600: !Equals [!Ref FaqRestStreamIntegrationTimeoutSeconds, 600]
   UseFaqRemoteRagAssumeRole: !And
     - !Equals [!Ref FaqPortsProfile, remote]
     - !Not [!Equals [!Ref FaqRemoteRagRoleArn, '']]
@@ -266,6 +314,189 @@ Resources:
           - ThrottlingBurstLimit: 5
             ThrottlingRateLimit: 2
           - !Ref AWS::NoValue
+
+  FaqRestStreamApi:
+    Type: AWS::Serverless::Api
+    Condition: HasRestStreamApi
+    Properties:
+      Name: !Sub ${Environment}-${FaqTableNamespace}-faq-rest-stream
+      StageName: !Ref Environment
+      EndpointConfiguration: REGIONAL
+      OpenApiVersion: 3.0.1
+      # Parameter-only changes (including timeout/CORS) must publish a new deployment too.
+      AlwaysDeploy: true
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingBurstLimit: 5
+          ThrottlingRateLimit: 2
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${FaqChatCorsOrigin}'"
+              Access-Control-Allow-Methods: "'POST, OPTIONS'"
+              Access-Control-Allow-Headers: "'Content-Type'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: !Sub "'${FaqChatCorsOrigin}'"
+              Access-Control-Allow-Methods: "'POST, OPTIONS'"
+              Access-Control-Allow-Headers: "'Content-Type'"
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: Public FAQ REST streaming entrance
+          version: '1.0'
+        paths:
+          /faq-chat:
+            post:
+              responses:
+                '200':
+                  description: Existing FAQ JSON response and CORS headers
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                responseTransferMode: STREAM
+                timeoutInMillis:
+                  !If [RestStreamTimeoutIs1, 1000,
+                    !If [RestStreamTimeoutIs5, 5000,
+                      !If [RestStreamTimeoutIs10, 10000,
+                        !If [RestStreamTimeoutIs20, 20000,
+                          !If [RestStreamTimeoutIs29, 29000,
+                            !If [RestStreamTimeoutIs30, 30000,
+                              !If [RestStreamTimeoutIs45, 45000,
+                                !If [RestStreamTimeoutIs60, 60000,
+                                  !If [RestStreamTimeoutIs70, 70000,
+                                    !If [RestStreamTimeoutIs90, 90000,
+                                      !If [RestStreamTimeoutIs120, 120000,
+                                        !If [RestStreamTimeoutIs180, 180000,
+                                          !If [RestStreamTimeoutIs240, 240000,
+                                            !If [RestStreamTimeoutIs300, 300000,
+                                              !If [RestStreamTimeoutIs600, 600000, 900000]]]]]]]]]]]]]]]
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${FaqChatStreamFunction.Arn}/response-streaming-invocations
+            options:
+              responses:
+                '200':
+                  description: Existing FAQ JSON response and CORS headers
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                responseTransferMode: STREAM
+                timeoutInMillis:
+                  !If [RestStreamTimeoutIs1, 1000,
+                    !If [RestStreamTimeoutIs5, 5000,
+                      !If [RestStreamTimeoutIs10, 10000,
+                        !If [RestStreamTimeoutIs20, 20000,
+                          !If [RestStreamTimeoutIs29, 29000,
+                            !If [RestStreamTimeoutIs30, 30000,
+                              !If [RestStreamTimeoutIs45, 45000,
+                                !If [RestStreamTimeoutIs60, 60000,
+                                  !If [RestStreamTimeoutIs70, 70000,
+                                    !If [RestStreamTimeoutIs90, 90000,
+                                      !If [RestStreamTimeoutIs120, 120000,
+                                        !If [RestStreamTimeoutIs180, 180000,
+                                          !If [RestStreamTimeoutIs240, 240000,
+                                            !If [RestStreamTimeoutIs300, 300000,
+                                              !If [RestStreamTimeoutIs600, 600000, 900000]]]]]]]]]]]]]]]
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${FaqChatStreamFunction.Arn}/response-streaming-invocations
+          /agents/{agentId}/faq-chat:
+            parameters:
+              - name: agentId
+                in: path
+                required: true
+                schema:
+                  type: string
+            post:
+              responses:
+                '200':
+                  description: Existing FAQ JSON response and CORS headers
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                responseTransferMode: STREAM
+                timeoutInMillis:
+                  !If [RestStreamTimeoutIs1, 1000,
+                    !If [RestStreamTimeoutIs5, 5000,
+                      !If [RestStreamTimeoutIs10, 10000,
+                        !If [RestStreamTimeoutIs20, 20000,
+                          !If [RestStreamTimeoutIs29, 29000,
+                            !If [RestStreamTimeoutIs30, 30000,
+                              !If [RestStreamTimeoutIs45, 45000,
+                                !If [RestStreamTimeoutIs60, 60000,
+                                  !If [RestStreamTimeoutIs70, 70000,
+                                    !If [RestStreamTimeoutIs90, 90000,
+                                      !If [RestStreamTimeoutIs120, 120000,
+                                        !If [RestStreamTimeoutIs180, 180000,
+                                          !If [RestStreamTimeoutIs240, 240000,
+                                            !If [RestStreamTimeoutIs300, 300000,
+                                              !If [RestStreamTimeoutIs600, 600000, 900000]]]]]]]]]]]]]]]
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${FaqChatStreamFunction.Arn}/response-streaming-invocations
+            options:
+              responses:
+                '200':
+                  description: Existing FAQ JSON response and CORS headers
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                responseTransferMode: STREAM
+                timeoutInMillis:
+                  !If [RestStreamTimeoutIs1, 1000,
+                    !If [RestStreamTimeoutIs5, 5000,
+                      !If [RestStreamTimeoutIs10, 10000,
+                        !If [RestStreamTimeoutIs20, 20000,
+                          !If [RestStreamTimeoutIs29, 29000,
+                            !If [RestStreamTimeoutIs30, 30000,
+                              !If [RestStreamTimeoutIs45, 45000,
+                                !If [RestStreamTimeoutIs60, 60000,
+                                  !If [RestStreamTimeoutIs70, 70000,
+                                    !If [RestStreamTimeoutIs90, 90000,
+                                      !If [RestStreamTimeoutIs120, 120000,
+                                        !If [RestStreamTimeoutIs180, 180000,
+                                          !If [RestStreamTimeoutIs240, 240000,
+                                            !If [RestStreamTimeoutIs300, 300000,
+                                              !If [RestStreamTimeoutIs600, 600000, 900000]]]]]]]]]]]]]]]
+                uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2021-11-15/functions/${FaqChatStreamFunction.Arn}/response-streaming-invocations
+
+  FaqRestStreamChatPostPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRestStreamApi
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatStreamFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRestStreamApi}/${Environment}/POST/faq-chat
+
+  FaqRestStreamChatOptionsPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRestStreamApi
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatStreamFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRestStreamApi}/${Environment}/OPTIONS/faq-chat
+
+  FaqRestStreamAgentPostPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRestStreamApi
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatStreamFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRestStreamApi}/${Environment}/POST/agents/*/faq-chat
+
+  FaqRestStreamAgentOptionsPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasRestStreamApi
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatStreamFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FaqRestStreamApi}/${Environment}/OPTIONS/agents/*/faq-chat
 
   SettingsTable:
     Type: AWS::DynamoDB::Table
@@ -372,7 +603,7 @@ Resources:
       FunctionName: !Sub ${Environment}-faq-chat-free
       CodeUri: functions/faq-chat/
       Handler: bootstrap.handler
-      Timeout: 28
+      Timeout: !Ref FaqChatFunctionTimeoutSeconds
       Description: Standalone public FAQ using the free retrieval and generation adapters
       Environment:
         Variables:
@@ -383,6 +614,7 @@ Resources:
           FAQ_REMOTE_RAG_ROLE_ARN: !Ref FaqRemoteRagRoleArn
           FAQ_REMOTE_RAG_EXTERNAL_ID: !Ref FaqRemoteRagExternalId
           FAQ_CORS_ORIGIN: !Ref FaqChatCorsOrigin
+          FAQ_MAX_INFLIGHT: !Ref FaqMaxInflight
           FAQ_TABLE_NAME_PREFIX: !Sub ${Environment}-${FaqTableNamespace}
           FAQ_SETTINGS_TABLE_NAME: !Ref SettingsTable
           FAQ_AGENT_CONFIG_TABLE_NAME: !Ref AgentConfigTable
@@ -429,6 +661,85 @@ Resources:
               Resource:
                 - !GetAtt SettingsTable.Arn
                 - !GetAtt AgentConfigTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt SettingsTable.Arn
+              Condition:
+                ForAllValues:StringLike:
+                  dynamodb:LeadingKeys:
+                    - 'faq_inflight_slot#*'
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt FaqQaLogsTable.Arn
+        - !If
+          - UseFaqRemoteRagAssumeRole
+          - Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sts:AssumeRole
+                Resource: !Ref FaqRemoteRagRoleArn
+          - !Ref AWS::NoValue
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Minify: true
+        Target: es2022
+        Sourcemap: true
+        EntryPoints:
+          - bootstrap.ts
+        External:
+          - '@aws-sdk/*'
+
+  FaqChatStreamFunction:
+    Type: AWS::Serverless::Function
+    Condition: HasRestStreamApi
+    Properties:
+      FunctionName: !Sub ${Environment}-${FaqTableNamespace}-faq-chat-stream
+      CodeUri: functions/faq-chat/
+      Handler: bootstrap.streamHandler
+      Timeout: !Ref FaqChatFunctionTimeoutSeconds
+      Description: Optional REST streaming entrance for the unchanged public FAQ handler
+      Environment:
+        Variables:
+          ANTHROPIC_API_KEY: !Ref AnthropicApiKey
+          FAQ_PORTS_PROFILE: !Ref FaqPortsProfile
+          FAQ_REMOTE_RAG_TRANSPORT: !Ref FaqRemoteRagTransport
+          FAQ_REMOTE_RAG_BASE_URL: !Ref FaqRemoteRagBaseUrl
+          FAQ_REMOTE_RAG_ROLE_ARN: !Ref FaqRemoteRagRoleArn
+          FAQ_REMOTE_RAG_EXTERNAL_ID: !Ref FaqRemoteRagExternalId
+          FAQ_CORS_ORIGIN: !Ref FaqChatCorsOrigin
+          FAQ_MAX_INFLIGHT: !Ref FaqMaxInflight
+          FAQ_TABLE_NAME_PREFIX: !Sub ${Environment}-${FaqTableNamespace}
+          FAQ_SETTINGS_TABLE_NAME: !Ref SettingsTable
+          FAQ_AGENT_CONFIG_TABLE_NAME: !Ref AgentConfigTable
+          FAQ_KNOWLEDGE_ENTRIES_TABLE_NAME: !Ref KnowledgeEntriesTable
+          FAQ_QA_LOGS_TABLE_NAME: !Ref FaqQaLogsTable
+          FAQ_QA_LOG_RETENTION_DAYS: !Ref FaqQaLogRetentionDays
+          FAQ_QA_NOTIFY_WEBHOOK_URL: !Ref FaqQaNotifyWebhookUrl
+          FAQ_QA_NOTIFY_ASYNC_ENABLED: !Ref FaqQaNotifyAsyncEnabled
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !GetAtt KnowledgeEntriesTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource:
+                - !GetAtt SettingsTable.Arn
+                - !GetAtt AgentConfigTable.Arn
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource: !GetAtt SettingsTable.Arn
+              Condition:
+                ForAllValues:StringLike:
+                  dynamodb:LeadingKeys:
+                    - 'faq_inflight_slot#*'
             - Effect: Allow
               Action:
                 - dynamodb:PutItem
@@ -791,6 +1102,14 @@ Resources:
           - '@aws-sdk/*'
 
 Outputs:
+  FaqRestStreamApiUrl:
+    Condition: HasRestStreamApi
+    Description: Optional Regional REST streaming API base URL, including the stage
+    Value: !Sub https://${FaqRestStreamApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}
+  FaqChatStreamCallerRoleArn:
+    Condition: HasRestStreamApi
+    Description: Stream caller role ARN to register alongside the HTTP caller in the MIF Remote RAG trust policy
+    Value: !GetAtt FaqChatStreamFunctionRole.Arn
   FaqApiUrl:
     Description: FAQ API base URL
     Value: !Sub https://${FaqHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}

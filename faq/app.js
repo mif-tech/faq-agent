@@ -16,6 +16,14 @@
   var MAX_CONTEXT_QUESTIONS = 6; // サーバーの maxHistoryMessages と同じ既定
 
   var apiBaseUrl = (window.FAQ_CONFIG && window.FAQ_CONFIG.apiBaseUrl) || '';
+  var configuredRequestTimeoutMs = window.FAQ_CONFIG && window.FAQ_CONFIG.requestTimeoutMs;
+  // setTimeout の符号付き32bit上限を超える値は即時実行になるため、既定値へ戻す。
+  var requestTimeoutMs =
+    Number.isInteger(configuredRequestTimeoutMs) &&
+    configuredRequestTimeoutMs > 0 &&
+    configuredRequestTimeoutMs <= 2147483647
+      ? configuredRequestTimeoutMs
+      : 40000;
 
   // テナント固有のブランド名は config.js に閉じ込め、ここで反映する
   // （framework正本の index.html は汎用名のまま。未設定時も汎用名で動作）
@@ -271,15 +279,15 @@
     setBusy(true);
     showTyping();
 
-    // 無応答時に「回答中です…」が永久に残らないよう40秒で打ち切る（PRレビュー指摘）。
-    // API GW HTTP API の統合タイムアウト上限30秒より少し長く = サーバー側の504が先に返る
+    // 無応答時に「回答中です…」が永久に残らないよう設定した時間で打ち切る（既定40秒）。
+    // 既定は API GW HTTP API の統合タイムアウト上限30秒より少し長く = サーバー側の504が先に返る
     // 通常経路を妨げず、「接続が張られたまま無反応」の限定ケースだけを拾う安全網。
     // 打ち切りは AbortError として既存の .catch（通信エラー文言）へ合流する
     var controller = typeof AbortController === 'function' ? new AbortController() : null;
     var timeoutId = controller
       ? setTimeout(function () {
           controller.abort();
-        }, 40000)
+        }, requestTimeoutMs)
       : null;
 
     fetch(apiBaseUrl.replace(/\/$/, '') + '/faq-chat', {

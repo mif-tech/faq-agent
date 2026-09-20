@@ -1,4 +1,5 @@
 import type { FaqPorts } from '../ports/index.js';
+import { disabledFaqInflightPort } from '../ports/inflight.js';
 import type {
   FaqAnswerGenerationPort,
   FaqGenerationRequest,
@@ -422,6 +423,7 @@ export function createStubFaqPorts(options: StubFaqPortsOptions = {}): StubFaqPo
         return profile === undefined ? null : { ...profile };
       },
     },
+    inflight: disabledFaqInflightPort,
     defaultModel: 'stub-model',
     ...(options.guardBusinessTerms ? { guardVocabulary: { businessTerms: options.guardBusinessTerms } } : {}),
   };

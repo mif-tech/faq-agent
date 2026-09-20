@@ -33,6 +33,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from 'aws-lambda';
 import type { FaqPorts } from './ports/index.js';
+import type { FaqInflightLease } from './ports/inflight.js';
 import { isPublishableSourceUrl } from './source-url.js';
 import {
   containsUrl,
@@ -57,6 +58,8 @@ import {
   finalizeFaqQaNotifyOutcome,
   recordFaqGenerateBudget,
   recordFaqHandlerOutcome,
+  recordFaqInflightAcquisition,
+  recordFaqInflightRelease,
   recordFaqQaNotifyOutcome,
   recordFaqQaWriteOutcome,
   recordFaqShellDuration,
@@ -117,6 +120,15 @@ const SERVICE_UNAVAILABLE_MESSAGE =
 // 文言マッチは変更時に黙って壊れる fail-open になるため採らない / codexレビュー指摘）
 const TECHNICAL_FALLBACK_MESSAGE =
   '申し訳ありません。一時的に回答を生成できませんでした。お手数ですが、もう一度お試しください。';
+/** Fixed public envelope for technical failures; never include diagnostic data. */
+export const TECHNICAL_FALLBACK_ENVELOPE = Object.freeze({
+  answer: TECHNICAL_FALLBACK_MESSAGE,
+  answerable: false,
+  sources: Object.freeze([] as const),
+  responseType: 'refuse',
+  failureKind: 'envelope_invalid',
+  retryable: true,
+} as const);
 // 範囲内だが資料不足（scope_fallback）。「情報が存在しない」と断定せず、
 // 検索漏れの可能性に誠実な文言にする（codex設計）。モデルには文面を書かせず必ずこれを返す。
 // Settings faq_chat.scopeFallbackMessage でテナント別に上書き可能
@@ -573,7 +585,7 @@ function errorLogFields(error: unknown): { error_name: string; http_status_code:
   };
 }
 
-function jsonResponse(statusCode: number, body: unknown): APIGatewayProxyResultV2 {
+export function jsonResponse(statusCode: number, body: unknown, headers: Record<string, string> = {}): APIGatewayProxyResultV2 {
   const serializeStartedAt = Date.now();
   let serializedBody: string;
   try {
@@ -590,6 +602,7 @@ function jsonResponse(statusCode: number, body: unknown): APIGatewayProxyResultV
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
       // 公開チャット応答は中間キャッシュに残さない
       'Cache-Control': 'no-store',
+      ...headers,
     },
     body: serializedBody,
   };
@@ -1670,8 +1683,13 @@ function boundRemoteRetrievalHints(
   };
 }
 
+function busyResponse(retryAfterMs = 5_000): APIGatewayProxyResultV2 {
+  const retryAfterSeconds = Math.min(60, Math.max(1, Math.ceil(retryAfterMs / 1_000)));
+  return jsonResponse(429, { error: 'busy', retryable: true }, { 'Retry-After': String(retryAfterSeconds) });
+}
+
 function remoteRagErrorResponse(
-  error: FaqRagError | { code: 'remote_transport_unsupported'; retryable: false },
+  error: Exclude<FaqRagError, { code: 'busy' }> | { code: 'remote_transport_unsupported'; retryable: false },
   fallbackMessage: string
 ): { response: FaqRagPublicResponse; route: string } {
   switch (error.code) {
@@ -1689,12 +1707,8 @@ function remoteRagErrorResponse(
       return {
         route: 'refuse_time_budget',
         response: {
-          answer: TECHNICAL_FALLBACK_MESSAGE,
-          answerable: false,
-          sources: [],
-          responseType: 'refuse',
-          failureKind: 'envelope_invalid',
-          retryable: true,
+          ...TECHNICAL_FALLBACK_ENVELOPE,
+          sources: [...TECHNICAL_FALLBACK_ENVELOPE.sources],
         },
       };
     case 'expired_token':
@@ -1716,12 +1730,8 @@ function remoteRagErrorResponse(
     // remote-v1 の公開技術失敗形は envelope_invalid + retryable の一形に固定する。
     // 詳細コードは本文やレスポンスへ流さず remote_error_code メトリクスで切り分ける。
     response: {
-      answer: TECHNICAL_FALLBACK_MESSAGE,
-      answerable: false,
-      sources: [],
-      responseType: 'refuse',
-      failureKind: 'envelope_invalid',
-      retryable: true,
+      ...TECHNICAL_FALLBACK_ENVELOPE,
+      sources: [...TECHNICAL_FALLBACK_ENVELOPE.sources],
     },
   };
 }
@@ -1780,6 +1790,7 @@ async function handleFaqRequest(
   // 見捨てた雑談系Haiku呼び出し（SDKタイムアウトで採用期限+マージン内に自己終了する）。
   // Lambda凍結を跨ぐ持ち越しを防ぐため、応答を返す前に必ず確定させる
   const smalltalkInFlight: Promise<unknown>[] = [];
+  let inflightLease: Extract<FaqInflightLease, { kind: 'acquired' }> | undefined;
   const settleSmalltalkCalls = async () => {
     if (smalltalkInFlight.length > 0) {
       const settleStartedAt = Date.now();
@@ -1896,6 +1907,16 @@ async function handleFaqRequest(
         responseType: 'chat',
       });
     }
+
+    // Template replies above are final without model/retrieval work. Every other
+    // path must reserve capacity before either the router or KB/remote calls.
+    const acquireStartedAt = Date.now();
+    const capacity = await faqPorts.inflight.acquire(context?.getRemainingTimeInMillis?.() ?? NaN);
+    recordFaqInflightAcquisition(
+      capacity.kind, capacity.kind === 'acquired' ? capacity.slot : null, Date.now() - acquireStartedAt
+    );
+    if (capacity.kind === 'busy') return busyResponse();
+    if (capacity.kind === 'acquired') inflightLease = capacity;
 
     smalltalkMetricFields = {
       smalltalk_mode: smalltalkMode,
@@ -2132,13 +2153,14 @@ async function handleFaqRequest(
           }
         }
         if (!answerResponse.ok) {
+          if (answerResponse.error.code === 'busy') return busyResponse(answerResponse.error.retryAfterMs);
           const mapped = remoteRagErrorResponse(answerResponse.error, fallbackMessage);
-          return respondFromRemote(mapped.response, mapped.route, 'answer', answerResponse.error.code);
+          return await respondFromRemote(mapped.response, mapped.route, 'answer', answerResponse.error.code);
         }
         const response = answerResponse.response;
         const route = response.responseType === 'kb_answer' ? 'kb_answer'
           : response.scopeFallback === true ? 'scope_fallback' : 'refuse_guard';
-        return respondFromRemote(response, route, 'answer', null);
+        return await respondFromRemote(response, route, 'answer', null);
       }
 
       const faqRagPort = remoteTransport.port;
@@ -2174,13 +2196,14 @@ async function handleFaqRequest(
         }
       }
       if (!retrieveResponse.ok) {
+        if (retrieveResponse.error.code === 'busy') return busyResponse(retrieveResponse.error.retryAfterMs);
         if (retrieveResponse.error.code === 'invalid_contract') {
           console.error(
             '[faq-chat] remote contract failure: operation=retrieve code=invalid_contract'
           );
         }
         const mapped = remoteRagErrorResponse(retrieveResponse.error, fallbackMessage);
-        return respondFromRemote(
+        return await respondFromRemote(
           mapped.response,
           mapped.route,
           'retrieve',
@@ -2225,13 +2248,14 @@ async function handleFaqRequest(
         }
       }
       if (!generateResponse.ok) {
+        if (generateResponse.error.code === 'busy') return busyResponse(generateResponse.error.retryAfterMs);
         if (generateResponse.error.code === 'invalid_contract') {
           console.error(
             '[faq-chat] remote contract failure: operation=generate code=invalid_contract'
           );
         }
         const mapped = remoteRagErrorResponse(generateResponse.error, fallbackMessage);
-        return respondFromRemote(
+        return await respondFromRemote(
           mapped.response,
           mapped.route,
           'generate',
@@ -2246,7 +2270,7 @@ async function handleFaqRequest(
           : remoteResponse.scopeFallback === true
             ? 'scope_fallback'
             : 'refuse_guard';
-      return respondFromRemote(remoteResponse, remoteRoute, 'complete', null);
+      return await respondFromRemote(remoteResponse, remoteRoute, 'complete', null);
     }
 
     // KB注入（public のみ・検索型）。検索クエリは「現在の質問」のみ（過去質問は混ぜない）。
@@ -2404,12 +2428,8 @@ async function handleFaqRequest(
       });
       return jsonResponse(200, {
         // 時間切れは技術失敗。KBに情報がない場合と同じ文言を返さない
-        answer: TECHNICAL_FALLBACK_MESSAGE,
-        answerable: false,
-        sources: [],
-        responseType: 'refuse',
+        ...TECHNICAL_FALLBACK_ENVELOPE,
         failureKind: 'time_budget',
-        retryable: true,
       });
     }
     const modelStartedAt = Date.now();
@@ -2525,10 +2545,8 @@ async function handleFaqRequest(
         return jsonResponse(200, {
           // 生成未完了（切断・pause_turn）だけ再試行を促す。「情報がない」と誤解される文言を
           // 返さない（1500化後も残る~4%の救済導線）。refusal・未知stop_reasonは従来文言のまま
-          answer: generationIncomplete ? TECHNICAL_FALLBACK_MESSAGE : fallbackMessage,
-          answerable: false,
-          sources: [],
-          responseType: 'refuse',
+          ...TECHNICAL_FALLBACK_ENVELOPE,
+          answer: generationIncomplete ? TECHNICAL_FALLBACK_ENVELOPE.answer : fallbackMessage,
           failureKind,
           retryable: generationIncomplete,
         });
@@ -2675,14 +2693,13 @@ async function handleFaqRequest(
       model,
       totalMs,
     });
-    return jsonResponse(200, {
+    return jsonResponse(200, envelopeInvalid ? { ...TECHNICAL_FALLBACK_ENVELOPE } : {
       answer,
       answerable,
       sources: answerable ? sources : [],
       responseType,
       // 範囲内だが資料不足（意味的な非回答）。UIやevalは refuse と区別できる
       ...(scopeFallback ? { scopeFallback: true } : {}),
-      ...(envelopeInvalid ? { failureKind: 'envelope_invalid', retryable: true } : {}),
     });
   } catch (error) {
     // ここに落ちるのは Settings/KB検索/DynamoDB 障害等（雑談パイプラインは自前catchを持つ）。
@@ -2716,6 +2733,21 @@ async function handleFaqRequest(
       error: SERVICE_UNAVAILABLE_MESSAGE,
       responseType: 'refuse',
     });
+  } finally {
+    if (inflightLease) {
+      try {
+        // Router SDK work is settled before relinquishing its processing capacity.
+        await settleSmalltalkCalls();
+      } finally {
+        try {
+          await inflightLease.release();
+          recordFaqInflightRelease('success');
+        } catch {
+          recordFaqInflightRelease('failure');
+          console.warn('[faq-chat] inflight release failed; lease will expire');
+        }
+      }
+    }
   }
 }
 

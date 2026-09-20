@@ -84,6 +84,7 @@ function statementForAction(code, action) {
 const dataContracts = [
   ['dynamodb:Scan', 'KnowledgeEntries', 'KnowledgeEntriesTable'],
   ['dynamodb:GetItem', 'Settings', 'SettingsTable'],
+  ['dynamodb:UpdateItem', 'Settings', 'SettingsTable'],
   ['dynamodb:PutItem', 'FaqQaLogs', 'FaqQaLogsTable'],
 ];
 
@@ -109,13 +110,15 @@ for (const contract of contracts) {
       'dynamodb:GetItem',
       'dynamodb:PutItem',
       'dynamodb:Scan',
+      'dynamodb:UpdateItem',
       'sts:AssumeRole',
       ...(contract.kind === 'canonical' ? ['execute-api:Invoke'] : []),
     ].sort();
 
     assert.deepEqual(actions(code), expectedActions);
-    assert.doesNotMatch(code, /\b(?:DeleteItem|UpdateItem|BatchWriteItem)\b/u);
-    assert.doesNotMatch(code, /\*/u);
+    assert.doesNotMatch(code, /\b(?:DeleteItem|BatchWriteItem)\b/u);
+    // Only the processing-slot key condition may contain a wildcard, never Action/Resource.
+    assert.doesNotMatch(code.replace(/^ {20}- 'faq_inflight_slot#\*'$/gmu, ''), /\*/u);
     if (contract.kind === 'canonical') {
       assert.doesNotMatch(code, /\bAgentConfig(?:Table)?\b/u);
     }
@@ -148,6 +151,20 @@ for (const contract of contracts) {
         );
       }
     }
+
+    const slotUpdate = statementForAction(code, 'dynamodb:UpdateItem');
+    assert.equal(
+      [...slotUpdate.matchAll(/!GetAtt [A-Za-z][A-Za-z0-9]*Table\.Arn|!Sub 'arn:[^'\n]+:table\/[^'\n]+'/gu)].length,
+      1,
+      'processing-slot updates must target only the exact Settings table'
+    );
+    assert.doesNotMatch(slotUpdate, /KnowledgeEntries|AgentConfig|FaqQaLogs/u);
+    const conditionStart = slotUpdate.indexOf('Condition:');
+    assert.notEqual(conditionStart, -1, 'processing-slot updates must have a key condition');
+    assert.equal(
+      slotUpdate.slice(conditionStart).split('\n').map((line) => line.trim()).join('\n').trim(),
+      "Condition:\nForAllValues:StringLike:\ndynamodb:LeadingKeys:\n- 'faq_inflight_slot#*'"
+    );
 
     const assumeRole = statementForAction(code, 'sts:AssumeRole');
     assert.match(assumeRole, /Resource: !Ref FaqRemoteRagRoleArn/u);
