@@ -186,6 +186,10 @@ Lambda の `FaqChatFunctionTimeoutSeconds=28` 秒、UI の40000 ms、remote の�
 `FaqChatStreamCallerRoleArn` を MIF 側の invoker role の信頼対象に登録する準備も必要です。
 同じ `FaqRemoteRagRoleArn`・External ID・環境変数・IAM policy を設定するだけでは、
 新しい caller role の信頼は追加されません。
+MIF 運用者は旧 caller の設定を保持し、任意の stream caller 追加設定で exact ARN を登録します。
+この設定の初回既定値は空で、deploy 入力は非空時だけ override し、未指定時は override しません。
+旧 trust を置換せず、同じ tenant 固有 ExternalId を条件に新旧両 caller を許可します。
+stream caller だけの設定は拒否します。同じ invoker role を引き受けるため、role と tenant の対応表は変更しません。
 
 公開 lite の UI 切替は、PR4 の検証を完了してから次の手動手順で行います。
 正本の `generate-frontend-env.sh` は公開配布に含まれず、この切替には使えません。
@@ -200,25 +204,54 @@ tenant chatops 側の対応には、正本 `lambda/template.yaml` に同じパ�
      --query "Stacks[0].Outputs[?OutputKey=='FaqApiUrl'].OutputValue | [0]" --output text
    ```
 
-2. 配信中の設定を基に `faq/config.js` の `apiBaseUrl` だけを `FaqRestStreamApiUrl` の値（stage を含み、末尾スラッシュなし）に差し替えます。ここでは `/faq-chat` を付けません。`faq/index.html` の CSP `connect-src` も同じ URL の origin（`https://ホスト名`、stage なし）に差し替えます。
-3. FAQ UI の既存配信先で、該当する2ファイルだけを更新します。次の例は bucket 直下での配信です。prefix 配下で配信している場合は既存の2キーを指定してください。**bucket 全面 sync は禁止**です。
+2. **先に `faq/index.html` の CSP `connect-src` で新旧両 API origin を許可して配信します。** 新 origin は `FaqRestStreamApiUrl` の `https://ホスト名` 部分（stage なし）です。旧 origin も切り戻し期間中保持します。以下は既存配信先が bucket 直下の場合で、prefix 配下なら既存キーを指定してください。**bucket 全面 sync は禁止**です。
 
    ```bash
-   aws s3 cp faq/config.js s3://FAQ_UI_BUCKET/config.js --content-type application/javascript
    aws s3 cp faq/index.html s3://FAQ_UI_BUCKET/index.html --content-type text/html
    ```
 
-   CloudFront などでキャッシュしている場合は、この2ファイルのキャッシュを更新してから、ブラウザの送信先と CSP、FAQ 応答を確認します。
-4. 切り戻しでは `apiBaseUrl` を記録した旧 HTTP API URL に、CSP `connect-src` を旧 origin に戻し、同じ2ファイルだけを再配信・確認します。公開 lite の旧 URL は `FaqApiUrl` です（正本 tenant chatops の同等 Output 名は `ApiEndpoint`）。旧経路を絞った後は、切り戻し前に旧経路の throttle / events も復元します。
+   CloudFront などの `index.html` キャッシュを更新し、新旧 origin を許可する CSP が反映されたことを確認します。
+3. その後、配信中の設定を基に `faq/config.js` の `apiBaseUrl` を `FaqRestStreamApiUrl` の値（stage を含み、末尾スラッシュなし）へ切り替えます。ここでは `/faq-chat` を付けません。config を先に変えると旧 CSP に拒否され得ます。
+
+   ```bash
+   aws s3 cp faq/config.js s3://FAQ_UI_BUCKET/config.js --content-type application/javascript
+   ```
+
+   config のキャッシュを更新し、ブラウザの送信先・CSP・FAQ 応答を確認します。時間延長時の `requestTimeoutMs` は下記の順序で75000に設定します。
+4. **時間延長後の切り戻しは URL 復元だけでは不十分です。** MIF の cap / TTL / Timeout を **20000 ms / 30000 ms / 28秒**へ一組で短縮 → 処理中要求の完了を確認 → shell の `FaqChatFunctionTimeoutSeconds` を **28秒**へ戻す → 旧 throttle / routes / caller trust の利用可能性を確認・必要なら復元 → shell の MIF base URL と UI URL・CSP を復元、の順で行います。MIF / shell の処理枠は維持します。
+   MIF base URL は記録した旧 API Gateway URL、UI の旧 URL は公開 lite の `FaqApiUrl` です（正本 tenant chatops の同等 Output 名は `ApiEndpoint`）。UI では旧 origin を許可する CSP を先に反映し、config の `apiBaseUrl` と `requestTimeoutMs` を旧値へ戻してキャッシュ更新・動作確認後、新 origin を CSP から外します。
 
 PR4 の有効化・切替チェックリスト:
 
 - **検証ステージで一度 `FaqRestStreamApiEnabled=true` の CreateStack まで通してから本番切替する**（正本 `CLAUDE.md` の「最初の有効化は必ず検証ステージから」に従う）。`Fn::If` 方式は検証 stack の CreateStack で `timeoutInMillis: 70000`（整数）・`responseTransferMode: STREAM`・既存封筒と同一の応答バイトを確認済みです（本番切替前に自分の検証ステージでも同じ確認を行ってください）。実機で確認したのは70秒分岐のみで、他の分岐はテストで固定した構造同一性に依存するため、配布先の検証ステージでは切替に使う値で再確認してください。`sam build` / `sam validate --lint`、ローカル SAM 変換後のテンプレートテスト、read-only の `aws cloudformation validate-template` だけでは、CloudFormation 側の Processed template や `responseTransferMode: STREAM` の実配備を確認できません。新規検証 stack の Processed template で4経路の `timeoutInMillis` を確認し、整数として受理され、実際の STREAM 応答が既存封筒を保つことを確認します。
-- 併存前に `FaqMaxInflight` を正の値（1〜10）に設定し、両関数の `FAQ_MAX_INFLIGHT` リースを有効にします。`FaqChatStreamFunction` に `ReservedConcurrentExecutions` はなく、共有する同時処理ガードはこのリースだけです（既定0は無効）。
-- 併存中の throttle は API 単位で独立します。同じ FAQ route の実効レート上限は2系統合計 **4 rps / burst 10**（各2 rps / burst 5）になるため、両方への流入と共有リースの拒否を確認します。
-- remote 利用時は `FaqChatStreamCallerRoleArn` の trust / External ID を確認し、UI の手動切替と時間予算の延長を検証します。
-- 単位を ms に揃えて `Lambda Timeout（FaqChatFunctionTimeoutSeconds × 1000）< UI requestTimeoutMs < REST 統合 timeout`、かつ全体 < Regional idle 300s を常に満たします。`FaqChatFunctionTimeoutSeconds` だけを延ばすと UI が先に abort して30秒撤廃の効果が消えます。
-- 切替後に旧 HTTP API 経路を絞る／止める段取りを用意します。旧 `FaqHttpApi.RouteSettings` の該当 route の throttle を下げる、または旧 HTTP API の events を外す別 PR で対応し、切り戻しに必要な設定を記録します。UI の送信先変更だけでは旧公開入口は止まりません。
+- 併存前に `FaqMaxInflight` を正の値（1〜10）に設定し、両関数の `FAQ_MAX_INFLIGHT` リースを有効にします。`FaqChatStreamFunction` に `ReservedConcurrentExecutions` はなく、共有する同時処理ガードはこのリースだけです（既定0は無効）。新旧入口へ同時に流入させ、合算が `FaqMaxInflight` で制限されること、解放後に再取得できることを確認します。
+- 併存中の throttle は API 単位で独立します。既定値では同じ FAQ route の実効レート上限は2系統合計 **4 rps / burst 10**（各2 rps / burst 5）になるため、両方への流入と共有リースの拒否を確認します。
+- remote 利用時は MIF の tenant 満杯・total 満杯をそれぞれ発生させ、公開 shell の429、busy 時の quota 未消費、解放後の再取得を確認します。MIF total が4の場合、`eval-public` に `maxInflight=1` を設定し、評価だけで全4枠を占有させない選択肢があります。caller / MIF 両アカウントの `ConcurrentExecutions` / `Throttles` と処理枠メトリクスも照合します。
+- 新旧両 caller の trust / ExternalId を保持し、**実 caller の実行環境または同じ実行 role の一時検証関数**から ExternalId 付き AssumeRole → SigV4（service `lambda`）による Function URL 呼出しの許可を実 role smoke で確認します。ExternalId なし・不一致、trust 対象外 principal の拒否と、通常の直接 Invoke が Function URL 限定権限では拒否されることも確認します。管理者 credential からの検証だけでは実 caller の権限を確認できません。
+- 延長後は単位を揃えて **`shell Lambda Timeout < REST 統合 timeout < UI requestTimeoutMs`（例 65 < 70 < 75 秒）**、
+  かつ **`MIF cap + 余白 ≤ MIF Timeout < shell Timeout`、全体 < Regional idle 300s** を満たします。
+  MIF の余白は生成250 ms + 退出1500 msです。UI が Gateway の応答を待てる順序にし、先行 abort を防ぎます。
+- PR4 の最終設定は **MIF cap 45000 ms / TTL 60000 ms / MIF Timeout 60秒 / shell 65秒 / REST 統合70秒 / UI `requestTimeoutMs=75000`** の組です。cap 45秒へ延長する際は TTL 60秒も必ず同時に設定します。旧 TTL 30000 ms のままでは `sessionTtlMs >= cap + 250 ms` の初期化検証を通りません。
+- 延長順序は **REST 統合70秒 → UI 75秒 → shell 65秒 → MIF 45000 / 60000 / 60（一組）**です。処理枠の有効化・計測と、MIF Function URL / 公開 REST STREAM への切替・動作確認を終えてから延長します。切り戻しは上記手順4の順序で行います。
+- 切替後は次のパラメータと手順で旧 HTTP API の FAQ 経路を絞り、利用がなくなってから停止します。UI の送信先変更だけでは旧公開入口は止まりません。
+
+旧 HTTP API の FAQ 経路用パラメータ（PR5）:
+
+| SAM パラメータ | 既定値 | 動作 |
+| --- | --- | --- |
+| `FaqHttpApiFaqRoutesEnabled` | 文字列 `'true'` | `'true'` / `'false'`。`false` は Slack agent 設定済みの場合のみ指定でき、`POST` / `OPTIONS /faq-chat` と `POST` / `OPTIONS /agents/{agentId}/faq-chat` の4ルートと呼出し権限、および2つの POST RouteSettings を生成しません |
+| `FaqHttpApiFaqThrottlingRateLimit` | 2 | 旧 FAQ の2つの POST route の requests/秒。整数1〜100 |
+| `FaqHttpApiFaqThrottlingBurstLimit` | 5 | 旧 FAQ の2つの POST route の burst。整数1〜100 |
+
+SAM が `Events: !If` を受理しないため、従来の4 events 相当の FAQ ルートを明示的な OpenAPI `DefinitionBody` に定義し、`HasFaqHttpApiFaqRoutes` による `!If` で切り替えます。4つの Lambda 呼出し権限にも同じ Condition を付け、従来の logical ID と権限範囲を維持します。`FaqChatFunction` と IAM role は無効化中も保持し、再有効化時に remote のクロスアカウント trust が参照する principal を作り直しません。Slack の event と統合は従来どおりです。
+
+throttle の2パラメータは `Number` 型です。`AllowedPattern` は `Number` に使えないため、`MinValue: 1` / `MaxValue: 100` と `AllowedValues` の整数1〜100で範囲と整数性を検証します。遮断は `FaqHttpApiFaqRoutesEnabled=false`（Slack 設定あり）で行います。
+
+1. 切替前の throttle / routes / caller trust を記録します。移行観測期間は `FaqHttpApiFaqThrottlingRateLimit=1` / `FaqHttpApiFaqThrottlingBurstLimit=2` へ下げ、数日間 `faq_shell_timing` の `entrypoint=http-api` 件数を観測します。REST STREAM 側の throttle は変わりません。
+   整数のため 1 rps 未満の段階は作れません。rate 1 / burst 2 が実質的な最小段階です。
+2. 旧 FAQ ルートを無効化できるのは Slack agent を設定している配布先のみです。Slack 非利用なら HTTP API に route が残らないため、無効化せず throttle で絞ります（`FaqHttpApiMustKeepARoute` Rule が Slack 未設定での無効化を拒否します）。Slack 設定ありで旧入口の利用件数が0になったら、`FaqHttpApiFaqRoutesEnabled=false` で再デプロイします。FAQ の4ルートと呼出し権限、および2つの POST RouteSettings だけを削除し、`HasSlackAgent` で制御される `POST /slack/events` とその RouteSettings は変更しません。HTTP API 自体と Output `FaqApiUrl` は Slack 用として残りますが、**この URL の FAQ ルートは無効**です。
+3. 旧 FAQ 入口の再有効化は `FaqHttpApiFaqRoutesEnabled=true` へ戻して再デプロイします。UI の CSP に旧 origin を保持している間は CSP の再変更を待たずに旧入口へ復帰できます。**時間延長後の切り戻しは前述の UI 切替手順4を守り**、MIF の時間短縮・処理中要求の完了・shell の短縮後に旧入口を再有効化し、記録した throttle / caller trust を確認・必要なら復元してから UI の URL と待機時間を戻します。
+4. 旧入口を無効化した後は UI の CSP `connect-src` から旧 origin を削除して構いません。削除後に切り戻す場合は、前述の UI 切替手順4に従い旧 origin を許可する CSP の配信・キャッシュ更新を先に完了してから UI の URL を戻します。
 
 統合時間は、秒パラメータを `Conditions` の `Fn::Equals` で比較し、4経路それぞれの
 `Fn::If` の連鎖で整数ミリ秒リテラルを返します。既存の許容値16個と既定70秒を維持し、
@@ -270,7 +303,7 @@ workerの固定ログ `faq_qa_notify_worker outcome=success|duplicate|failure` �
 
 SAM パラメータ `FaqMaxInflight` は環境変数 `FAQ_MAX_INFLIGHT` に配線され、整数 0〜10 を受理します。
 既定の `0` は無効で、処理枠の DynamoDB I/O は発生しません。有効化と枠数の決定は PR4 の段階切替で行います。
-既存の公開 API Gateway throttle（2 rps / burst 5）も維持します。
+公開 API Gateway throttle の既定値（2 rps / burst 5）も維持します。旧 HTTP API の FAQ 経路だけを絞る場合は上記 PR5 のパラメータを使います。
 
 有効時は Settings テーブルの `key=faq_inflight_slot#<i>` に条件付き UpdateItem で期限付きリースを取得します。
 新しいテーブルや Settings の Key/TTL 変更はなく、追加 IAM は Settings だけの UpdateItem です。
@@ -371,9 +404,10 @@ transport はデプロイ時の `FaqRemoteRagTransport` → `FAQ_REMOTE_RAG_TRAN
 credential 取得や HTTP 呼出し前に構成エラーで停止します。custom domain の region は推定しません。
 リクエスト先は引き続き `${baseUrl}/v1/${operation}` で、DTO・時間予算・transport の既定値は変わりません。
 
-Function URL は入口追加のみで、既存 API Gateway からの切替は PR4 です。切替・切り戻しの運用手順は
-PR4 で確定し、切替時は MIF が提示する URL を `FaqRemoteRagBaseUrl` に指定、切り戻しは記録した
-API Gateway Base URL に戻します。MIF 側の引受先 role に対象 v1 関数限定の `lambda:InvokeFunctionUrl` と
+Function URL は入口追加のみで、既存 API Gateway からの切替は PR4 です。上記「公開 REST STREAM 経路」の
+チェックリストと配信・切り戻し順序に従い、切替時は MIF が提示する URL を `FaqRemoteRagBaseUrl` に指定します。
+時間延長後の切り戻しは MIF の時間短縮・処理完了・shell の短縮・旧入口の確認を先に行い、
+記録した API Gateway Base URL に戻します。MIF 側の引受先 role に対象 v1 関数限定の `lambda:InvokeFunctionUrl` と
 `lambda:InvokedViaFunctionUrl=true` 条件付き `lambda:InvokeFunction` が必要です。
 lite caller role の権限は引き続き exact role への `sts:AssumeRole` のみです。
 

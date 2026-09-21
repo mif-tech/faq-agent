@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.6.0-alpha",
-  "canonicalHead": "180fe2ff0e05bf0088d724b9f4d56d122ce3ee95",
-  "fileCount": 120,
+  "sourceRef": "v0.6.1-alpha",
+  "canonicalHead": "0019a646517d8d4bd3d994e729eeda685b42c321",
+  "fileCount": 121,
   "files": [
     {
       "path": ".gitattributes",
@@ -366,7 +366,7 @@
     },
     {
       "path": "lambda/template.yaml",
-      "sha256": "2ebb64d6af597f404e3e7d968f73105d2a2f7ffc1041f3ed62e4a9fe3d7bba6c",
+      "sha256": "8dd3fff1fed328d7f6676faf9b60a2baa477868b8eeffb0f90cc5c7ddb7076b4",
       "origin": "overlay"
     },
     {
@@ -441,7 +441,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-remote-template.test.mjs",
-      "sha256": "3c517016e8dce767355f673ac018902fb7db8979fca1e98aed0c9d2afab2f1a7",
+      "sha256": "3026cec4c6a820e8c0a1f801383ecbea228af5967b97aef47e565e4b26b87183",
       "origin": "overlay"
     },
     {
@@ -500,6 +500,11 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/tests/faq-http-api-routes-template.test.mjs",
+      "sha256": "619acbe635f99ca08ebd234811234fe3966a5bb851eef93676a54a7c82030cea",
+      "origin": "overlay"
+    },
+    {
       "path": "lambda/tests/faq-inflight-template.test.mjs",
       "sha256": "6164de84d1d6aa8956cffb5b1873420c22c3d1e12d7c8b39a7469eb03bd1671b",
       "origin": "allowlist"
@@ -511,7 +516,7 @@
     },
     {
       "path": "lambda/tests/faq-rest-stream-template.test.mjs",
-      "sha256": "7f5223430f5fdef237ddee472883b95c367ffa65260a4c1b03785f49ebb6d49c",
+      "sha256": "3cdcb76196a1fd4df201573c5105d9dbd4f8f3ff437372b2f831bbdb11dc15c6",
       "origin": "overlay"
     },
     {
@@ -546,7 +551,7 @@
     },
     {
       "path": "lambda/tests/slack-lite-template.test.mjs",
-      "sha256": "599c84b10ca5495f152cc6af37fc662ea9c11bdf5390af0e7dae80075f52d53a",
+      "sha256": "14f48665048871b5f2333e47480054c1281013cee2f13f3bebef6cab43859158",
       "origin": "overlay"
     },
     {
@@ -571,7 +576,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "2f409a81c7326064940accd939a4250ce90837f3af4c281e3f18ac4faf3e4da7",
+      "sha256": "f2673212f66169fa9147c66b31c44b7f6dc9729c9fed0987ba1bc95dbc729dd5",
       "origin": "overlay"
     },
     {

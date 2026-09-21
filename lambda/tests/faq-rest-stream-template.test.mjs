@@ -190,10 +190,9 @@ test('Lambda permissions are restricted to this account, API, stage, method and 
   }
 });
 
-test('REST stage retains HTTP throttle values and gateway failures include browser CORS headers', () => {
-  const httpThrottle = resources.FaqHttpApi.Properties.RouteSettings['POST /faq-chat'];
+test('REST stage retains its throttle independently of HTTP and gateway failures include browser CORS headers', () => {
   assert.deepEqual(api.Properties.MethodSettings, [{
-    ResourcePath: '/*', HttpMethod: '*', ...httpThrottle,
+    ResourcePath: '/*', HttpMethod: '*', ThrottlingBurstLimit: 5, ThrottlingRateLimit: 2,
   }]);
   assert.deepEqual(Object.keys(api.Properties.GatewayResponses), ['DEFAULT_4XX', 'DEFAULT_5XX']);
   for (const response of Object.values(api.Properties.GatewayResponses)) {

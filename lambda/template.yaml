@@ -168,6 +168,49 @@ Parameters:
     ConstraintDescription: Must be an ASCII base-10 integer from 10 to 300 without leading zeros, signs, whitespace, decimal points, or exponents
     Description: FAQ shell Lambda timeout in seconds; retain 28 until the staged transport migration
 
+  FaqHttpApiFaqRoutesEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['false', 'true']
+    Description: Keep the legacy HTTP API FAQ routes; false requires Slack to keep the HTTP API non-empty
+
+  FaqHttpApiFaqThrottlingRateLimit:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 100
+    # AllowedPattern is String-only; enumerate integers to reject fractional Numbers.
+    AllowedValues: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+      41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+      51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+      61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+      71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+      81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    ConstraintDescription: Must be an integer from 1 to 100
+    Description: Legacy HTTP FAQ requests per second; disable routes with FaqHttpApiFaqRoutesEnabled=false when Slack is configured
+
+  FaqHttpApiFaqThrottlingBurstLimit:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+    AllowedValues: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+      41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+      51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+      61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+      71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+      81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    ConstraintDescription: Must be an integer from 1 to 100
+    Description: Legacy HTTP FAQ burst capacity; disable routes with FaqHttpApiFaqRoutesEnabled=false when Slack is configured
+
   FaqRestStreamApiEnabled:
     Type: String
     Default: 'false'
@@ -192,6 +235,12 @@ Parameters:
     Description: Concurrent FAQ processing leases; 0 disables admission control until the PR4 staged rollout
 
 Rules:
+  FaqHttpApiMustKeepARoute:
+    RuleCondition: !Equals [!Ref FaqHttpApiFaqRoutesEnabled, 'false']
+    Assertions:
+      - Assert: !Not [!Equals [!Ref SlackSigningSecret, '']]
+        AssertDescription: Disabling the legacy FAQ routes requires Slack to keep the HTTP API non-empty
+
   FaqRemoteProfileRequiresConfiguration:
     RuleCondition: !Equals [!Ref FaqPortsProfile, remote]
     Assertions:
@@ -257,6 +306,7 @@ Rules:
         AssertDescription: AnthropicApiKey is required when Slack is enabled
 
 Conditions:
+  HasFaqHttpApiFaqRoutes: !Equals [!Ref FaqHttpApiFaqRoutesEnabled, 'true']
   HasRestStreamApi: !Equals [!Ref FaqRestStreamApiEnabled, 'true']
   # Fn::If returns integer literals without FindInMap inside SAM's DefinitionBody.
   # AllowedValues leaves only 900 seconds for the final 900000 millisecond branch.
@@ -292,6 +342,61 @@ Resources:
             - W1028
     Properties:
       StageName: !Ref Environment
+      # SAM cannot transform Events: !If. Declare the equivalent routes and
+      # permissions explicitly, retaining the function/role for rollback trust.
+      DefinitionBody:
+        openapi: '3.0.1'
+        info:
+          version: '1.0'
+          title: !Ref AWS::StackName
+        paths:
+          /faq-chat: !If
+            - HasFaqHttpApiFaqRoutes
+            - post:
+                responses: {}
+                x-amazon-apigateway-integration:
+                  httpMethod: POST
+                  type: aws_proxy
+                  payloadFormatVersion: '2.0'
+                  uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaqChatFunction.Arn}/invocations
+              options:
+                responses: {}
+                x-amazon-apigateway-integration:
+                  httpMethod: POST
+                  type: aws_proxy
+                  payloadFormatVersion: '2.0'
+                  uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaqChatFunction.Arn}/invocations
+            - !Ref AWS::NoValue
+          /agents/{agentId}/faq-chat: !If
+            - HasFaqHttpApiFaqRoutes
+            - post:
+                responses: {}
+                parameters:
+                  - required: true
+                    name: agentId
+                    in: path
+                x-amazon-apigateway-integration:
+                  httpMethod: POST
+                  type: aws_proxy
+                  payloadFormatVersion: '2.0'
+                  uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaqChatFunction.Arn}/invocations
+              options:
+                responses: {}
+                parameters:
+                  - required: true
+                    name: agentId
+                    in: path
+                x-amazon-apigateway-integration:
+                  httpMethod: POST
+                  type: aws_proxy
+                  payloadFormatVersion: '2.0'
+                  uri: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FaqChatFunction.Arn}/invocations
+            - !Ref AWS::NoValue
+          # SAM still generates the unchanged Slack integration from SlackEventsApi.
+          /slack/events: !If
+            - HasSlackAgent
+            - post: {}
+            - !Ref AWS::NoValue
       CorsConfiguration:
         AllowOrigins:
           - !Ref FaqChatCorsOrigin
@@ -301,12 +406,16 @@ Resources:
         AllowHeaders:
           - Content-Type
       RouteSettings:
-        'POST /faq-chat':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 2
-        'POST /agents/{agentId}/faq-chat':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 2
+        'POST /faq-chat': !If
+          - HasFaqHttpApiFaqRoutes
+          - ThrottlingBurstLimit: !Ref FaqHttpApiFaqThrottlingBurstLimit
+            ThrottlingRateLimit: !Ref FaqHttpApiFaqThrottlingRateLimit
+          - !Ref AWS::NoValue
+        'POST /agents/{agentId}/faq-chat': !If
+          - HasFaqHttpApiFaqRoutes
+          - ThrottlingBurstLimit: !Ref FaqHttpApiFaqThrottlingBurstLimit
+            ThrottlingRateLimit: !Ref FaqHttpApiFaqThrottlingRateLimit
+          - !Ref AWS::NoValue
         # Slack無効時はrouteが生成されないため、stage設定も残さない（存在しないrouteへの
         # RouteSettingsを避ける / レビュー指摘）。
         'POST /slack/events': !If
@@ -623,31 +732,6 @@ Resources:
           FAQ_QA_LOG_RETENTION_DAYS: !Ref FaqQaLogRetentionDays
           FAQ_QA_NOTIFY_WEBHOOK_URL: !Ref FaqQaNotifyWebhookUrl
           FAQ_QA_NOTIFY_ASYNC_ENABLED: !Ref FaqQaNotifyAsyncEnabled
-      Events:
-        FaqChatApi:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /faq-chat
-            Method: POST
-        FaqChatOptions:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /faq-chat
-            Method: OPTIONS
-        FaqAgentChatApi:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /agents/{agentId}/faq-chat
-            Method: POST
-        FaqAgentChatOptions:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /agents/{agentId}/faq-chat
-            Method: OPTIONS
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -691,6 +775,59 @@ Resources:
           - bootstrap.ts
         External:
           - '@aws-sdk/*'
+
+  # Retain the SAM-generated logical IDs and scopes of the former HttpApi events.
+  FaqChatFunctionFaqChatApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasFaqHttpApiFaqRoutes
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub:
+          - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/POST/faq-chat
+          - __ApiId__: !Ref FaqHttpApi
+            __Stage__: '*'
+
+  FaqChatFunctionFaqChatOptionsPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasFaqHttpApiFaqRoutes
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub:
+          - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/OPTIONS/faq-chat
+          - __ApiId__: !Ref FaqHttpApi
+            __Stage__: '*'
+
+  FaqChatFunctionFaqAgentChatApiPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasFaqHttpApiFaqRoutes
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub:
+          - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/POST/agents/*/faq-chat
+          - __ApiId__: !Ref FaqHttpApi
+            __Stage__: '*'
+
+  FaqChatFunctionFaqAgentChatOptionsPermission:
+    Type: AWS::Lambda::Permission
+    Condition: HasFaqHttpApiFaqRoutes
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FaqChatFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn:
+        Fn::Sub:
+          - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${__ApiId__}/${__Stage__}/OPTIONS/agents/*/faq-chat
+          - __ApiId__: !Ref FaqHttpApi
+            __Stage__: '*'
 
   FaqChatStreamFunction:
     Type: AWS::Serverless::Function

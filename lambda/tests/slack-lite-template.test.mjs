@@ -605,7 +605,7 @@ test('dedicated Slack roles contain only exact inline least-privilege permission
   assert.equal(Object.hasOwn(worker.Properties, 'Policies'), false);
 });
 
-test('Slack ingress route uses the FAQ throttle and exact public entrypoint', () => {
+test('Slack ingress retains its throttle independently of FAQ and its exact public entrypoint', () => {
   const routeSettings = template.Resources.FaqHttpApi.Properties.RouteSettings;
   // Slack無効時はrouteが生成されないため、stage設定もFn::IfでAWS::NoValueへ落とす
   // （存在しないrouteへのRouteSettings残留を防ぐ / レビュー指摘）。
@@ -613,7 +613,7 @@ test('Slack ingress route uses the FAQ throttle and exact public entrypoint', ()
   assert.deepEqual(Object.keys(slackRouteSetting), ['Fn::If']);
   const [conditionName, enabledBranch, disabledBranch] = slackRouteSetting['Fn::If'];
   assert.equal(conditionName, 'HasSlackAgent');
-  assert.deepEqual(enabledBranch, routeSettings['POST /faq-chat']);
+  assert.deepEqual(enabledBranch, { ThrottlingBurstLimit: 5, ThrottlingRateLimit: 2 });
   assert.deepEqual(disabledBranch, { Ref: 'AWS::NoValue' });
 
   const ingress = getResource('SlackIngressFunction');
