@@ -34,6 +34,11 @@ const entrypoint = new AsyncLocalStorage<'http-api' | 'rest-stream'>();
 export function runFaqEntrypoint<T>(value: 'http-api' | 'rest-stream', callback: () => Promise<T>): Promise<T> {
   return entrypoint.run(value, callback);
 }
+
+/** Buffered invocations default to HTTP API; only the stream bootstrap overrides this. */
+export function getFaqEntrypoint(): 'http-api' | 'rest-stream' {
+  return entrypoint.getStore() ?? 'http-api';
+}
 const outcomes = new Set<string>(['success', 'disabled', 'skipped', 'timeout', 'failure']);
 const generateReasons = new Set<string>([...outcomes, 'no_match', 'truncated', 'refused', 'invalid_response']);
 const duration = (value: unknown): number => typeof value === 'number' && Number.isFinite(value)
@@ -223,7 +228,7 @@ export async function runFaqShellTiming<T>(options: {
       // timed-out work cannot mutate this event or a subsequent invocation's event.
       console.log(JSON.stringify({
         metric: 'faq_shell_timing',
-        entrypoint: entrypoint.getStore() ?? 'http-api',
+        entrypoint: getFaqEntrypoint(),
         ...state.fields,
         requestId: /^[A-Za-z0-9_+=./:-]{1,128}$/.test(options.requestId) ? options.requestId : null,
         coldStart: options.coldStart === true,

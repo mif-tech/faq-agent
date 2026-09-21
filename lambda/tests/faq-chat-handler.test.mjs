@@ -38,6 +38,7 @@ await build({
       `export { createStubFaqPorts } from ${JSON.stringify(stubPath)};`,
       `export { createFreeFaqPorts } from ${JSON.stringify(freePath)};`,
       `export { parseRemoteV1RetrieveRequest } from ${JSON.stringify(remoteContractPath)};`,
+      `export { runFaqEntrypoint } from ${JSON.stringify(path.join(FAQ_ROOT, 'shell-timing.ts'))};`,
     ].join('\n'),
     loader: 'ts',
     resolveDir: HERE,
@@ -123,6 +124,7 @@ const {
   createStubFaqPorts,
   handler,
   parseRemoteV1RetrieveRequest,
+  runFaqEntrypoint,
 } = await import(handlerModuleUrl);
 
 let freshHandlerModuleSequence = 0;
@@ -238,14 +240,14 @@ function lastFaqMetric(captured) {
   return metrics.at(-1);
 }
 
-function faqMetrics(captured) {
+function faqMetrics(captured, metricName = 'faq_chat') {
   const metrics = [];
   for (const args of captured.log) {
     for (const value of args) {
       if (typeof value !== 'string' || !value.startsWith('{')) continue;
       try {
         const parsed = JSON.parse(value);
-        if (parsed.metric === 'faq_chat') metrics.push(parsed);
+        if (parsed.metric === metricName) metrics.push(parsed);
       } catch {
         // 人間向けログ行は対象外。
       }
@@ -253,6 +255,98 @@ function faqMetrics(captured) {
   }
   return metrics;
 }
+
+async function withHttpApiRoutesFlag(value, callback) {
+  const envName = 'FAQ_HTTP_API_FAQ_ROUTES_ENABLED';
+  const previous = process.env[envName];
+  if (value === undefined) delete process.env[envName];
+  else process.env[envName] = value;
+  try {
+    return await callback();
+  } finally {
+    if (previous === undefined) delete process.env[envName];
+    else process.env[envName] = previous;
+  }
+}
+
+test('disabled HTTP API returns 410 before validation or any storage, capacity, router or remote calls', async () => {
+  await withHttpApiRoutesFlag('false', async () => {
+    const calls = [];
+    const forbidden = (name) => () => {
+      calls.push(name);
+      throw new Error(`${name} must not be called`);
+    };
+    const ports = createStubFaqPorts({ settings: { enabled: true, smalltalkMode: 'generated' } });
+    // Storage and inflight ports own all DynamoDB access. Trap every dependency
+    // method, including the router, so swallowed adapter errors cannot hide I/O.
+    for (const [name, port] of Object.entries(ports)) {
+      if (typeof port !== 'object' || port === null) continue;
+      ports[name] = Object.fromEntries(Object.entries(port).map(([key, value]) => [
+        key, typeof value === 'function' ? forbidden(`${name}.${key}`) : value,
+      ]));
+    }
+    for (const kind of [undefined, 'split-v1', 'one-shot-v1']) {
+      const remote = kind && { kind, port: {
+        retrieve: forbidden('remote.retrieve'), generate: forbidden('remote.generate'), answer: forbidden('remote.answer'),
+      } };
+      __setFaqPortsForTest(ports, remote);
+      for (const options of [
+        { messages: [{ role: 'user', content: '料金を教えてください' }] },
+        { rawBody: '{invalid json' },
+        { agentId: 'store-a', messages: [{ role: 'user', content: '料金を教えてください' }] },
+        { agentId: 'Invalid-Agent', rawBody: '{invalid json' },
+      ]) {
+        const { response, body, captured } = await invoke(options);
+        assert.equal(response.statusCode, 410);
+        assert.deepEqual(body, { error: 'legacy_entrance_disabled' });
+        assert.equal(response.headers['Access-Control-Allow-Origin'], process.env.FAQ_CORS_ORIGIN || '*');
+        assert.equal(response.headers['Access-Control-Allow-Headers'], 'Content-Type');
+        assert.equal(response.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
+        const metrics = faqMetrics(captured, 'faq_shell_timing');
+        assert.equal(metrics.length, 1);
+        assert.equal(metrics[0].handler_outcome, 'skipped');
+        assert.equal(metrics[0].entrypoint, 'http-api');
+        assert.equal(metrics[0].requestId, response.headers['x-faq-request-id']);
+        assert.equal(faqMetrics(captured).length, 0);
+        assert.deepEqual(calls, []);
+      }
+      for (const agentId of [undefined, 'missing-agent']) {
+        const { response, captured } = await invoke({ method: 'OPTIONS', agentId });
+        assert.equal(response.statusCode, 204);
+        assert.equal(response.body, undefined);
+        assert.equal(response.headers['Access-Control-Allow-Methods'], 'POST, OPTIONS');
+        assert.equal(faqMetrics(captured, 'faq_shell_timing')[0].handler_outcome, 'skipped');
+        assert.deepEqual(calls, []);
+      }
+    }
+  });
+});
+
+test('unset/true HTTP API flag and disabled flag on REST stream preserve normal processing', async (t) => {
+  for (const [flag, entrypoint] of [[undefined, 'http-api'], ['true', 'http-api'], ['false', 'rest-stream']]) {
+    await withHttpApiRoutesFlag(flag, async () => {
+      const ports = createStubFaqPorts({ entries: [NORMAL_ENTRY], settings: { enabled: true } });
+      const settings = t.mock.method(ports.storage, 'loadSettings');
+      const acquire = t.mock.method(ports.inflight, 'acquire');
+      __setFaqPortsForTest(ports);
+      const { response, body, captured } = await runFaqEntrypoint(entrypoint, () => invoke({
+        messages: [{ role: 'user', content: '料金を教えてください' }],
+      }));
+      assert.equal(response.statusCode, 200);
+      assert.equal(body.answerable, true);
+      assert.equal(settings.mock.callCount(), 1);
+      assert.equal(acquire.mock.callCount(), 1);
+      assert.equal(ports.retrieval.calls.length, 1);
+      assert.equal(ports.answerGeneration.calls.length, 1);
+      assert.equal(faqMetrics(captured, 'faq_shell_timing')[0].entrypoint, entrypoint);
+      if (flag === 'false') {
+        // REST stream context must not leak into the next buffered invocation.
+        assert.equal((await invoke({ rawBody: '{}' })).response.statusCode, 410);
+      }
+      t.mock.restoreAll();
+    });
+  }
+});
 
 test('named route: agentId形式不正はAgentConfigを読まず404にする', async () => {
   const ports = createStubFaqPorts({ settings: { enabled: true } });

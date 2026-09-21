@@ -14,6 +14,12 @@ await build({
   entryPoints: [path.join(root, 'functions/faq-qa-notify-worker/handler.ts')],
   outfile: output, bundle: true, format: 'esm', platform: 'node', target: 'node22',
   plugins: [{ name: 'no-network', setup(esbuild) {
+    // Use the allowlisted shared module in both generated-tree and raw-overlay tests.
+    esbuild.onResolve({ filter: /shell-timing\.js$/ }, () => {
+      const relative = 'functions/faq-chat/shell-timing.ts';
+      const local = path.join(root, relative);
+      return { path: fs.existsSync(local) ? local : path.resolve(root, '../../../../lambda', relative) };
+    });
     esbuild.onResolve({ filter: /^@aws-sdk\// }, ({ path }) => ({ path, namespace: 'test' }));
     esbuild.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
       contents: `export class DynamoDBClient {}

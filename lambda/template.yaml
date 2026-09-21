@@ -168,6 +168,49 @@ Parameters:
     ConstraintDescription: Must be an ASCII base-10 integer from 10 to 300 without leading zeros, signs, whitespace, decimal points, or exponents
     Description: FAQ shell Lambda timeout in seconds; retain 28 until the staged transport migration
 
+  FaqHttpApiFaqRoutesEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['false', 'true']
+    Description: Allow legacy HTTP API FAQ requests; false returns 410 from the shell while routes remain available locally
+
+  FaqHttpApiFaqThrottlingRateLimit:
+    Type: Number
+    Default: 2
+    MinValue: 1
+    MaxValue: 100
+    # AllowedPattern is String-only; enumerate integers to reject fractional Numbers.
+    AllowedValues: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+      41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+      51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+      61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+      71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+      81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    ConstraintDescription: Must be an integer from 1 to 100
+    Description: Legacy HTTP FAQ requests per second; stop shell processing with FaqHttpApiFaqRoutesEnabled=false
+
+  FaqHttpApiFaqThrottlingBurstLimit:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 100
+    AllowedValues: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+      21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+      41, 42, 43, 44, 45, 46, 47, 48, 49, 50,
+      51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+      61, 62, 63, 64, 65, 66, 67, 68, 69, 70,
+      71, 72, 73, 74, 75, 76, 77, 78, 79, 80,
+      81, 82, 83, 84, 85, 86, 87, 88, 89, 90,
+      91, 92, 93, 94, 95, 96, 97, 98, 99, 100]
+    ConstraintDescription: Must be an integer from 1 to 100
+    Description: Legacy HTTP FAQ burst capacity; stop shell processing with FaqHttpApiFaqRoutesEnabled=false
+
   FaqRestStreamApiEnabled:
     Type: String
     Default: 'false'
@@ -302,11 +345,11 @@ Resources:
           - Content-Type
       RouteSettings:
         'POST /faq-chat':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 2
+          ThrottlingBurstLimit: !Ref FaqHttpApiFaqThrottlingBurstLimit
+          ThrottlingRateLimit: !Ref FaqHttpApiFaqThrottlingRateLimit
         'POST /agents/{agentId}/faq-chat':
-          ThrottlingBurstLimit: 5
-          ThrottlingRateLimit: 2
+          ThrottlingBurstLimit: !Ref FaqHttpApiFaqThrottlingBurstLimit
+          ThrottlingRateLimit: !Ref FaqHttpApiFaqThrottlingRateLimit
         # Slack無効時はrouteが生成されないため、stage設定も残さない（存在しないrouteへの
         # RouteSettingsを避ける / レビュー指摘）。
         'POST /slack/events': !If
@@ -614,6 +657,7 @@ Resources:
           FAQ_REMOTE_RAG_ROLE_ARN: !Ref FaqRemoteRagRoleArn
           FAQ_REMOTE_RAG_EXTERNAL_ID: !Ref FaqRemoteRagExternalId
           FAQ_CORS_ORIGIN: !Ref FaqChatCorsOrigin
+          FAQ_HTTP_API_FAQ_ROUTES_ENABLED: !Ref FaqHttpApiFaqRoutesEnabled
           FAQ_MAX_INFLIGHT: !Ref FaqMaxInflight
           FAQ_TABLE_NAME_PREFIX: !Sub ${Environment}-${FaqTableNamespace}
           FAQ_SETTINGS_TABLE_NAME: !Ref SettingsTable
@@ -623,31 +667,6 @@ Resources:
           FAQ_QA_LOG_RETENTION_DAYS: !Ref FaqQaLogRetentionDays
           FAQ_QA_NOTIFY_WEBHOOK_URL: !Ref FaqQaNotifyWebhookUrl
           FAQ_QA_NOTIFY_ASYNC_ENABLED: !Ref FaqQaNotifyAsyncEnabled
-      Events:
-        FaqChatApi:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /faq-chat
-            Method: POST
-        FaqChatOptions:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /faq-chat
-            Method: OPTIONS
-        FaqAgentChatApi:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /agents/{agentId}/faq-chat
-            Method: POST
-        FaqAgentChatOptions:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref FaqHttpApi
-            Path: /agents/{agentId}/faq-chat
-            Method: OPTIONS
       Policies:
         - Version: '2012-10-17'
           Statement:
@@ -681,6 +700,33 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref FaqRemoteRagRoleArn
           - !Ref AWS::NoValue
+      # Keep static Events so sam local start-api can discover all FAQ routes.
+      # Legacy entrance disablement is enforced in the shell, including locally.
+      Events:
+        FaqChatApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /faq-chat
+            Method: POST
+        FaqChatOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /faq-chat
+            Method: OPTIONS
+        FaqAgentChatApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /agents/{agentId}/faq-chat
+            Method: POST
+        FaqAgentChatOptions:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FaqHttpApi
+            Path: /agents/{agentId}/faq-chat
+            Method: OPTIONS
     Metadata:
       BuildMethod: esbuild
       BuildProperties:

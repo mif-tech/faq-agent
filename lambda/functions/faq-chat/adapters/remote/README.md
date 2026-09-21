@@ -383,19 +383,37 @@ PR4 must first pass CreateStack with `FaqRestStreamApiEnabled=true` in a validat
 `sam build` and `sam validate --lint` do not verify the resolved timeout type or a live STREAM
 deployment. Before coexistence, set `FaqMaxInflight` / `FAQ_MAX_INFLIGHT` to a positive value:
 the new function has no reserved concurrency, and the shared lease is disabled by default.
-Independent API throttles permit a combined 4 rps / burst 10 for the same FAQ route while
-both entrypoints are exposed. Plan to reduce the old HTTP API RouteSettings throttle or
-remove its events in a separate PR, retaining the settings needed for rollback.
+With default API throttles, the two entrypoints permit a combined 4 rps / burst 10 for the
+same FAQ route. Record the old throttle, enable flag, and caller trust before migration.
+For migration observation, set `FaqHttpApiFaqThrottlingRateLimit=1` and
+`FaqHttpApiFaqThrottlingBurstLimit=2` (recommended); rate 1 / burst 1 is also valid.
+Observe `faq_shell_timing.entrypoint=http-api` usage for several days. Once usage reaches
+zero, redeploy with `FaqHttpApiFaqRoutesEnabled=false`. This supplies the shell environment
+variable `FAQ_HTTP_API_FAQ_ROUTES_ENABLED`: HTTP API FAQ POST requests immediately return
+`410 {"error":"legacy_entrance_disabled"}` with the existing CORS headers, before input
+validation, Settings reads, processing-slot acquisition, routing, retrieval, or generation.
+The terminal metric records `entrypoint=http-api` and `handler_outcome=skipped`.
+OPTIONS still returns 204; REST STREAM and Slack are unaffected. This works with or without
+Slack configuration. All four FAQ HttpApi events remain unconditional in
+`FaqChatFunction.Events`, preserving `sam local start-api` route detection, invocation
+permissions, RouteSettings, and the function/role identity. The flag defaults to `'true'`;
+an unset environment variable also keeps the old entrypoint enabled.
 
-After validation, manually read `FaqRestStreamApiUrl`, replace the deployed `faq/config.js`
-`apiBaseUrl` with that stage-bearing URL without a trailing slash, and set `faq/index.html`
-CSP `connect-src` to its origin. Upload only those two files to their existing S3 keys; never
-sync the whole bucket. Rollback restores the previous `FaqApiUrl` and CSP origin using the
-same two files (`ApiEndpoint` is the equivalent output name in canonical tenant chatops).
-Restore the old route's throttle/events before rollback if they were restricted. UI
-publication and timeout extensions remain PR4 operations. Observe the new Lambda's metrics
-together with the REST API's CloudWatch metrics, and separate shell logs by
-`faq_shell_timing.entrypoint`; existing `faq_chat` metrics retain their meaning.
+After validation, manually read `FaqRestStreamApiUrl`. First publish `faq/index.html` with
+both API origins allowed in CSP `connect-src`, then publish `faq/config.js` with `apiBaseUrl`
+set to the stage-bearing REST URL without a trailing slash. Upload only those two files to
+their existing S3 keys and refresh their caches; never sync the whole bucket. After stopping
+the old entrypoint as above, remove its origin from CSP. To roll back after extending timeouts,
+first shorten MIF generation cap / session TTL / Lambda timeout together to
+20,000 ms / 30,000 ms / 28 seconds, wait for in-flight requests to finish, and restore the shell
+timeout to 28 seconds. Then redeploy with `FaqHttpApiFaqRoutesEnabled=true`, restore the
+recorded throttle and caller trust as needed, and restore the recorded MIF API Gateway base
+URL. Publish and refresh CSP with the old origin allowed before restoring the previous
+`FaqApiUrl` and browser timeout in `faq/config.js`
+(`ApiEndpoint` is the equivalent output name in canonical tenant chatops). Retain the MIF
+and shell processing-slot guards. UI publication and timeout extensions remain PR4 operations.
+Observe the new Lambda's metrics together with the REST API's CloudWatch metrics, and separate
+shell logs by `faq_shell_timing.entrypoint`; existing `faq_chat` metrics retain their meaning.
 
 ### Concurrent processing leases (PR1b)
 
