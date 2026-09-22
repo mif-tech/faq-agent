@@ -501,16 +501,19 @@ test('named FAQ route uses the same throttle limits and Lambda as the default ro
   );
 
   const events = template.Resources.FaqChatFunction.Properties.Events;
-  assert.deepEqual(events.FaqAgentChatApi.Properties, {
-    ApiId: { Ref: 'FaqHttpApi' },
-    Path: '/agents/{agentId}/faq-chat',
-    Method: 'POST',
-  });
-  assert.deepEqual(events.FaqAgentChatOptions.Properties, {
-    ApiId: { Ref: 'FaqHttpApi' },
-    Path: '/agents/{agentId}/faq-chat',
-    Method: 'OPTIONS',
-  });
+  for (const [named, standard, method] of [
+    ['FaqAgentChatApi', 'FaqChatApi', 'POST'],
+    ['FaqAgentChatOptions', 'FaqChatOptions', 'OPTIONS'],
+  ]) {
+    assert.deepEqual(events[named], {
+      Type: 'HttpApi',
+      Properties: { ApiId: { Ref: 'FaqHttpApi' }, Path: '/agents/{agentId}/faq-chat', Method: method },
+    });
+    assert.deepEqual(events[standard], {
+      Type: 'HttpApi',
+      Properties: { ...events[named].Properties, Path: '/faq-chat' },
+    });
+  }
 });
 
 test('remote profile parameters retain exact choices and deployment-safe constraints', () => {

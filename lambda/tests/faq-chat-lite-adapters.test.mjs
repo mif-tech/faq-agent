@@ -353,6 +353,13 @@ test('public production adapter delegates remote creation and keeps free/storage
     path.join(LAMBDA_ROOT, 'functions', 'faq-chat', 'adapters', 'production.ts'),
     path.join(tempRoot, 'production.mjs'),
     (esbuild) => {
+      // The generated tree includes allowlisted shared modules; the raw overlay
+      // needs the same module from the canonical lambda tree for standalone tests.
+      esbuild.onResolve({ filter: /^\.\/inflight\.js$/ }, () => {
+        const relative = 'functions/faq-chat/adapters/inflight.ts';
+        const local = path.join(LAMBDA_ROOT, relative);
+        return { path: fs.existsSync(local) ? local : path.resolve(LAMBDA_ROOT, '../../../../lambda', relative) };
+      });
       esbuild.onResolve({ filter: /^@aws-sdk\/lib-dynamodb$/ }, () => ({
         path: 'update-command', namespace: 'lite-test',
       }));

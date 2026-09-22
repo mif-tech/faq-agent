@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.6.0-alpha",
-  "canonicalHead": "180fe2ff0e05bf0088d724b9f4d56d122ce3ee95",
-  "fileCount": 120,
+  "sourceRef": "v0.6.2-alpha",
+  "canonicalHead": "dc24a6ab23ac5e41e045d782f96b2a96dfdf5b69",
+  "fileCount": 121,
   "files": [
     {
       "path": ".gitattributes",
@@ -161,7 +161,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/README.md",
-      "sha256": "31c3137fb8373ddc95f70b93a69b94c139f7c9b3765c0798b125767f5676031a",
+      "sha256": "e4b9f573a84b13aebc580f08df32744ec02f701ddeb761d043c47c580a9d460e",
       "origin": "allowlist"
     },
     {
@@ -186,7 +186,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/handler.ts",
-      "sha256": "10cc22bc51fd313bd77f63048c3e7eb7952501f8d6664078b60cc3cdc3ce5096",
+      "sha256": "4eccbded97c4e762ca2dddf3e6646462eaec5c164f5703559dbbe61dbfa56c5f",
       "origin": "allowlist"
     },
     {
@@ -241,7 +241,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/shell-timing.ts",
-      "sha256": "f63dc5c5bc6794344d0143984e1754b06e0f13611f64bff100ced0632348fcf2",
+      "sha256": "a50dd035e1175c706829315688e5b73b33d6bcb1071e9278080d3b701b62b4ae",
       "origin": "allowlist"
     },
     {
@@ -366,7 +366,7 @@
     },
     {
       "path": "lambda/template.yaml",
-      "sha256": "2ebb64d6af597f404e3e7d968f73105d2a2f7ffc1041f3ed62e4a9fe3d7bba6c",
+      "sha256": "aaa09b25a55238ef4fa0481622460214603e6548e2c81964602b1ef942e09868",
       "origin": "overlay"
     },
     {
@@ -406,7 +406,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-handler.test.mjs",
-      "sha256": "63d7ec12a4baadef372a0e6d53a93512474441018bdd47dd4924a74f0a7db308",
+      "sha256": "1995c790b88573675c390496609952c930c3eb021b90c9b2b34e7a67e798b9a6",
       "origin": "allowlist"
     },
     {
@@ -421,7 +421,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-adapters.test.mjs",
-      "sha256": "9dd42856232eef42b8f2339d204b85ef881b0c568cd58edb5ad98e5d759d5aa0",
+      "sha256": "634fba0390ec56d54d941d6e7c253ccc6bd8beb8f3d2f82d411c4578bdfee982",
       "origin": "overlay"
     },
     {
@@ -431,7 +431,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-async-notify.test.mjs",
-      "sha256": "7695f61aaa181c9f9d670dacad53947207b050eb2feb1473c441941d64fa3d8e",
+      "sha256": "3728e12f967339992145b96d89d4c7ab8bdfd3303b4aaed4cc576961cbeaf61d",
       "origin": "overlay"
     },
     {
@@ -441,7 +441,7 @@
     },
     {
       "path": "lambda/tests/faq-chat-lite-remote-template.test.mjs",
-      "sha256": "3c517016e8dce767355f673ac018902fb7db8979fca1e98aed0c9d2afab2f1a7",
+      "sha256": "4704dae21dd3c0aa166069bf17879b220c2092bc3371fa87cbd113c7dbe0cc7d",
       "origin": "overlay"
     },
     {
@@ -500,6 +500,11 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/tests/faq-http-api-routes-template.test.mjs",
+      "sha256": "156a0506b4dd6346a916d95b05be51b4f51d4ef50574227b6d2c30e3ce75bec9",
+      "origin": "overlay"
+    },
+    {
       "path": "lambda/tests/faq-inflight-template.test.mjs",
       "sha256": "6164de84d1d6aa8956cffb5b1873420c22c3d1e12d7c8b39a7469eb03bd1671b",
       "origin": "allowlist"
@@ -511,7 +516,7 @@
     },
     {
       "path": "lambda/tests/faq-rest-stream-template.test.mjs",
-      "sha256": "7f5223430f5fdef237ddee472883b95c367ffa65260a4c1b03785f49ebb6d49c",
+      "sha256": "7792f0c8e73cc6677540f9a3d3d49432ce74587e39224beabd413aa259718881",
       "origin": "overlay"
     },
     {
@@ -546,7 +551,7 @@
     },
     {
       "path": "lambda/tests/slack-lite-template.test.mjs",
-      "sha256": "599c84b10ca5495f152cc6af37fc662ea9c11bdf5390af0e7dae80075f52d53a",
+      "sha256": "14f48665048871b5f2333e47480054c1281013cee2f13f3bebef6cab43859158",
       "origin": "overlay"
     },
     {
@@ -571,7 +576,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "2f409a81c7326064940accd939a4250ce90837f3af4c281e3f18ac4faf3e4da7",
+      "sha256": "03931dd0c12a81087ec5fbb71b1d286dbc490f8af139a4244e52e9ad457d5544",
       "origin": "overlay"
     },
     {

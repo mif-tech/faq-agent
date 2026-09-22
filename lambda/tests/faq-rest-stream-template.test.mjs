@@ -155,15 +155,23 @@ test('all allowed second budgets produce integer milliseconds within the 15 minu
   for (const invalid of [0, 1.5, 70.5, 901]) assert.equal(parameter.AllowedValues.includes(invalid), false);
 });
 
-test('dedicated streaming function shares all runtime settings, environment and IAM with the buffered shell', () => {
+function assertSharedEnvironment(streamEnvironment, httpEnvironment) {
+  const shared = structuredClone(httpEnvironment);
+  assert.deepEqual(shared.Variables.FAQ_HTTP_API_FAQ_ROUTES_ENABLED, { Ref: 'FaqHttpApiFaqRoutesEnabled' });
+  delete shared.Variables.FAQ_HTTP_API_FAQ_ROUTES_ENABLED;
+  assert.deepEqual(streamEnvironment, shared, 'only the HTTP entrance disablement flag is entrance-specific');
+}
+
+test('dedicated streaming function shares runtime settings and IAM except the HTTP-only disablement flag', () => {
   assert.equal(stream.Type, 'AWS::Serverless::Function');
   assert.equal(stream.Condition, 'HasRestStreamApi');
   assert.equal(stream.Properties.Handler, 'bootstrap.streamHandler');
   assert.equal(stream.Properties.Events, undefined, 'only precise explicit REST permissions may invoke this entrance');
   assert.notDeepEqual(stream.Properties.FunctionName, legacy.Properties.FunctionName);
-  for (const field of ['CodeUri', 'Timeout', 'Environment', 'Policies', 'Runtime', 'MemorySize', 'Architectures']) {
+  for (const field of ['CodeUri', 'Timeout', 'Policies', 'Runtime', 'MemorySize', 'Architectures']) {
     assert.deepEqual(stream.Properties[field], legacy.Properties[field], `${field} must stay in parity`);
   }
+  assertSharedEnvironment(stream.Properties.Environment, legacy.Properties.Environment);
   assert.deepEqual(stream.Metadata, legacy.Metadata);
   const variables = stream.Properties.Environment.Variables;
   assert.deepEqual(variables.FAQ_QA_NOTIFY_ASYNC_ENABLED, { Ref: 'FaqQaNotifyAsyncEnabled' });
@@ -190,10 +198,9 @@ test('Lambda permissions are restricted to this account, API, stage, method and 
   }
 });
 
-test('REST stage retains HTTP throttle values and gateway failures include browser CORS headers', () => {
-  const httpThrottle = resources.FaqHttpApi.Properties.RouteSettings['POST /faq-chat'];
+test('REST stage retains its throttle independently of HTTP and gateway failures include browser CORS headers', () => {
   assert.deepEqual(api.Properties.MethodSettings, [{
-    ResourcePath: '/*', HttpMethod: '*', ...httpThrottle,
+    ResourcePath: '/*', HttpMethod: '*', ThrottlingBurstLimit: 5, ThrottlingRateLimit: 2,
   }]);
   assert.deepEqual(Object.keys(api.Properties.GatewayResponses), ['DEFAULT_4XX', 'DEFAULT_5XX']);
   for (const response of Object.values(api.Properties.GatewayResponses)) {
@@ -286,7 +293,7 @@ test('local SAM transform preserves STREAM and conditions the generated REST sta
     assert.deepEqual(response.responseParameters['gatewayresponse.header.Access-Control-Allow-Origin'],
       { 'Fn::Sub': "'${FaqChatCorsOrigin}'" });
   }
-  assert.deepEqual(transformed.Resources.FaqChatStreamFunction.Properties.Environment,
+  assertSharedEnvironment(transformed.Resources.FaqChatStreamFunction.Properties.Environment,
     transformed.Resources.FaqChatFunction.Properties.Environment);
   const streamRole = transformed.Resources.FaqChatStreamFunctionRole.Properties;
   const httpRole = transformed.Resources.FaqChatFunctionRole.Properties;

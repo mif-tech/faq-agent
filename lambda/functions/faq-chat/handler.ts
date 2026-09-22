@@ -56,6 +56,7 @@ import { boundPlanTexts } from '../../shared/public/search-plan-bounds.js';
 import {
   emitFaqChatMetric,
   finalizeFaqQaNotifyOutcome,
+  getFaqEntrypoint,
   recordFaqGenerateBudget,
   recordFaqHandlerOutcome,
   recordFaqInflightAcquisition,
@@ -3054,6 +3055,11 @@ export function createFaqHandler(
       // CORS preflightはデータを返さない。AgentConfigの存在・状態に依存させず、従来coreの204を使う。
       if (event.requestContext?.http?.method === 'OPTIONS') {
         response = await handleFaqRequest(faqPorts, event, context, remoteTransport, undefined, invocation);
+      } else if (getFaqEntrypoint() === 'http-api' && process.env.FAQ_HTTP_API_FAQ_ROUTES_ENABLED === 'false') {
+        // getFaqEntrypoint() の既定は 'http-api'（shell-timing.ts）。entrypoint 未設定 = HTTP API 扱いで fail-closed になるため、buffered handler を別入口（Function URL・直接 invoke・内部キュー等）から呼ぶ場合は runFaqEntrypoint で入口種別を必ず設定すること。
+        // Keep static SAM routes for local discovery, but stop retired HTTP API
+        // traffic before validation, Settings, inflight capacity or routing.
+        response = jsonResponse(410, { error: 'legacy_entrance_disabled' });
       } else {
         const agentId = event.pathParameters?.agentId;
         response = agentId === undefined
