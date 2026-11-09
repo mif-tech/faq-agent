@@ -1,3 +1,5 @@
+import { isPublishableSourceUrl as isPublishableUrl } from './source-url-policy.mjs';
+
 /**
  * 出典URLとして公開してよいものだけ通す。Notion のワークスペースURL（notion.so）は
  * 非公開ページのURLでありうるため返さない（公開ページは *.notion.site になる）。
@@ -6,14 +8,5 @@
  * 単一の正本。ここを分岐させると「公開してよいURL」の境界が経路ごとにずれる。
  */
 export function isPublishableSourceUrl(url: string | undefined): url is string {
-  if (!url) return false;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:') return false;
-    const host = parsed.hostname.toLowerCase();
-    if (host === 'notion.so' || host === 'www.notion.so') return false;
-    return true;
-  } catch {
-    return false;
-  }
+  return isPublishableUrl(url);
 }

@@ -3,7 +3,9 @@
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import {
   createSlackApiClient,
+  SlackApiError,
   type SlackApiClient,
+  type SlackGetUserInfoResult,
   type SlackMessage,
 } from './slack-api.js';
 import {
@@ -40,6 +42,7 @@ export interface SlackWorkerRuntimeConfig<TTrustClass extends string>
   extends SlackAgentRuntimeBoundary<TTrustClass> {
   botToken: string;
   botUserId: string;
+  expectedTeamId?: string;
   idempotencyTableName: string;
   maxReceiveCount: number;
 }
@@ -58,6 +61,103 @@ export interface SlackWorkerQueueEvent {
 
 export interface SlackWorkerInvocationContext {
   awsRequestId: string;
+}
+
+/** 1 record / 1試行だけの認可状態。Errorや前回試行からallowを引き継がない。 */
+interface SlackWorkerAttemptState {
+  dmAllowed: boolean;
+}
+
+type SlackDmAuthReason =
+  | 'ok'
+  | 'guest'
+  | 'foreign_team'
+  | 'bot'
+  | 'deleted'
+  | 'id_mismatch'
+  | 'missing_expected_team'
+  | 'invalid_type'
+  | 'api_error'
+  | 'invalid_response';
+
+type SlackDmAuthorizationResult =
+  | { result: 'allow'; slack: SlackApiClient }
+  | { result: 'deny' };
+
+function classifyDmUser(
+  response: SlackGetUserInfoResult,
+  userId: string,
+  expectedTeamId: string | undefined
+): SlackDmAuthReason {
+  // API失敗は呼び出し元で先に分類する。以降もreasonの優先順を崩さない。
+  if (response.kind === 'missing_user') return 'invalid_response';
+  if (!expectedTeamId) return 'missing_expected_team';
+  if (response.kind === 'invalid_user') return 'invalid_type';
+  const user = response.user;
+  if (
+    typeof user.id !== 'string' ||
+    typeof user.team_id !== 'string' ||
+    typeof user.is_restricted !== 'boolean' ||
+    typeof user.is_ultra_restricted !== 'boolean' ||
+    (user.deleted !== undefined && typeof user.deleted !== 'boolean') ||
+    (user.is_bot !== undefined && typeof user.is_bot !== 'boolean')
+  ) {
+    return 'invalid_type';
+  }
+  if (user.id !== userId) return 'id_mismatch';
+  if (user.team_id !== expectedTeamId) return 'foreign_team';
+  if (user.deleted === true) return 'deleted';
+  if (user.is_bot === true) return 'bot';
+  if (user.is_restricted || user.is_ultra_restricted) return 'guest';
+  return 'ok';
+}
+
+async function authorizeDirectMessage<TTrustClass extends string>(
+  job: SlackAgentJob<TTrustClass>,
+  runtime: SlackWorkerRuntimeConfig<TTrustClass>,
+  attempt: string
+): Promise<SlackDmAuthorizationResult> {
+  let slack: SlackApiClient | undefined;
+  let reason: SlackDmAuthReason;
+  try {
+    slack = createSlackApiClient({ botToken: runtime.botToken });
+    // キャッシュしない。posted済みの再配信も、その試行で利用者を再確認する。
+    const response = await slack.getUserInfo({ user: job.user });
+    reason = classifyDmUser(response, job.user, runtime.expectedTeamId);
+  } catch (error) {
+    reason =
+      error instanceof SlackApiError &&
+      (error.kind === 'invalid_json' || error.kind === 'invalid_response')
+        ? 'invalid_response'
+        : 'api_error';
+  }
+
+  console.log(
+    JSON.stringify({
+      metric: 'slack_agent_dm_auth',
+      result: reason === 'ok' ? 'allow' : 'deny',
+      reason,
+      agentId: job.agentId,
+      trustClass: job.trustClass,
+      sourceEventId: job.eventId,
+      attempt,
+    })
+  );
+  return reason === 'ok' && slack
+    ? { result: 'allow', slack }
+    : { result: 'deny' };
+}
+
+/** 相関IDだけを取り出し、壊れたpayloadや境界不一致の本文はログへ渡さない。 */
+function safeSourceEventId<TTrustClass extends string>(
+  rawBody: string,
+  runtime: SlackWorkerRuntimeConfig<TTrustClass>
+): string | undefined {
+  try {
+    return parseSlackAgentJob(rawBody, runtime).eventId;
+  } catch {
+    return undefined;
+  }
 }
 
 function compareSlackTs(a: SlackMessage, b: SlackMessage): number {
@@ -337,6 +437,8 @@ class SlackAnswerAlreadyPostedError extends Error {
 async function processJob<TTrustClass extends string>(
   rawBody: string,
   processingOwner: string,
+  attempt: string,
+  attemptState: SlackWorkerAttemptState,
   runtime: SlackWorkerRuntimeConfig<TTrustClass>,
   composition: SlackAgentPorts<TTrustClass>,
   documentClient: DynamoDBDocumentClient
@@ -344,7 +446,16 @@ async function processJob<TTrustClass extends string>(
   const processingStartedAt = Date.now();
   const job = parseSlackAgentJob(rawBody, runtime);
 
-  if (composition.policy.inspectJob(job) === 'ack') return;
+  if (composition.policy.inspectJob(job, runtime) === 'ack') return;
+
+  let slack: SlackApiClient | undefined;
+  if (job.channelType === 'im') {
+    const authorization = await authorizeDirectMessage(job, runtime, attempt);
+    // 専用の終端結果としてACK。claim/configにも最終失敗通知にも進めない。
+    if (authorization.result === 'deny') return;
+    attemptState.dmAllowed = true;
+    slack = authorization.slack;
+  }
 
   const idempotency = new SlackIdempotencyStore<TTrustClass>(
     documentClient,
@@ -381,7 +492,7 @@ async function processJob<TTrustClass extends string>(
   const config = await composition.config.resolve(runtime.agentId);
   composition.policy.assertAgentConfigBoundary(config, runtime);
 
-  const slack = createSlackApiClient({ botToken: runtime.botToken });
+  slack ??= createSlackApiClient({ botToken: runtime.botToken });
   const history = await loadConversationMessages(slack, job);
   const contextUserMessages = selectUserContext(history, job, runtime.botUserId);
   const currentQuestion = contextUserMessages.at(-1)!;
@@ -489,10 +600,12 @@ const FINAL_ATTEMPT_ERROR_TEXT =
 /** DLQ行き確定（最終試行の失敗）時だけ、沈黙の代わりに簡潔なエラー文言をbest-effortで返す。 */
 async function bestEffortNotifyFinalFailure<TTrustClass extends string>(
   rawBody: string,
-  runtime: SlackWorkerRuntimeConfig<TTrustClass>
+  runtime: SlackWorkerRuntimeConfig<TTrustClass>,
+  attemptState: SlackWorkerAttemptState
 ): Promise<void> {
   try {
     const job = parseSlackAgentJob(rawBody, runtime);
+    if (job.channelType === 'im' && !attemptState.dmAllowed) return;
     const slack = createSlackApiClient({ botToken: runtime.botToken });
     await slack.postMessage({
       channel: job.channel,
@@ -503,12 +616,21 @@ async function bestEffortNotifyFinalFailure<TTrustClass extends string>(
           : {}
         : { threadTs: job.threadTs ?? job.ts }),
     });
+    console.log(
+      JSON.stringify({
+        metric: 'slack_agent_failure_notice_posted',
+        agentId: runtime.agentId,
+        trustClass: runtime.trustClass,
+        sourceEventId: job.eventId,
+      })
+    );
   } catch (notifyError) {
     console.error(
       JSON.stringify({
         metric: 'slack_agent_failure_notice_failed',
         agentId: runtime.agentId,
         trustClass: runtime.trustClass,
+        sourceEventId: safeSourceEventId(rawBody, runtime),
         error: notifyError instanceof Error ? notifyError.name : 'Unknown',
       })
     );
@@ -525,10 +647,13 @@ export async function runSlackAgentWorker<TTrustClass extends string>(input: {
   // SAM は BatchSize=1。設定ドリフト時も各recordを個別ownerで扱う。
   for (const record of input.event.Records) {
     const processingOwner = `${input.context.awsRequestId}:${record.messageId}`;
+    const attemptState: SlackWorkerAttemptState = { dmAllowed: false };
     try {
       await processJob(
         record.body,
         processingOwner,
+        input.context.awsRequestId,
+        attemptState,
         input.runtime,
         input.composition,
         input.documentClient
@@ -540,6 +665,7 @@ export async function runSlackAgentWorker<TTrustClass extends string>(input: {
             metric: 'slack_agent_disabled_ack',
             agentId: input.runtime.agentId,
             trustClass: input.runtime.trustClass,
+            sourceEventId: safeSourceEventId(record.body, input.runtime),
           })
         );
         continue;
@@ -552,7 +678,7 @@ export async function runSlackAgentWorker<TTrustClass extends string>(input: {
         !(error instanceof SlackClaimBusyError) &&
         !(error instanceof SlackAnswerAlreadyPostedError)
       ) {
-        await bestEffortNotifyFinalFailure(record.body, input.runtime);
+        await bestEffortNotifyFinalFailure(record.body, input.runtime, attemptState);
       }
       throw error;
     }

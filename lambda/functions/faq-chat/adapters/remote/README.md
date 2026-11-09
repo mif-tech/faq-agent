@@ -227,6 +227,16 @@ minus MIF latency still includes Gateway and initialization effects and is not p
 time. Measure full client HTTP latency separately; changing instrumentation or enabling
 async notifications does not raise any existing generation timeout.
 
+To locate a failed attempt, match each MIF terminal metric's `requestId` to the
+shell's `remote_requests[].requestId`, then use the operation and attempt order to
+associate it with `remote_attempts`. The MIF `failureStage` distinguishes query
+embedding, KB search, session storage/claim, and generation failures behind the same
+public error code. `providerFailureClass`, `providerHttpStatus`, `providerAttempt`,
+`providerTimeoutMs`, and allowlisted `errorCode` remain private MIF diagnostics;
+`providerAttempt` counts the provider's own attempts, not shell HTTP retries.
+The shell's own `requestId` identifies the enclosing FAQ invocation, and is not the
+MIF request ID. No diagnostic fields or provider messages are added to the wire DTO.
+
 One-shot failure logs retain finite HTTP status even for a valid technical error DTO. A
 401/403 can therefore be diagnosed independently of the public `retrieval_failed` code.
 Positive rollout smoke returning 403 fails authorization validation; only an intentional

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "sourceRef": "v0.6.2-alpha",
-  "canonicalHead": "dc24a6ab23ac5e41e045d782f96b2a96dfdf5b69",
-  "fileCount": 121,
+  "sourceRef": "v0.7.0-alpha",
+  "canonicalHead": "6dfc9a2c6e4d14020f012477a0e3e92ad4ebaaa2",
+  "fileCount": 123,
   "files": [
     {
       "path": ".gitattributes",
@@ -31,7 +31,7 @@
     },
     {
       "path": "faq/app.js",
-      "sha256": "750b9656fb8ebec5ff871c581b5fa650e0ef318196049982522262e98257c974",
+      "sha256": "978021d229927e0c2082ab581035f7b6f8229f977f29bd641196f4a387017f03",
       "origin": "allowlist"
     },
     {
@@ -46,7 +46,7 @@
     },
     {
       "path": "faq/style.css",
-      "sha256": "6bf9c92969c62398c968b50b6c5e5717a24bb610e2c14e6705cae3d7fc437456",
+      "sha256": "4de46234a6edce621d8b54818b8842bf854415c703e0a0252b302ec3321afcef",
       "origin": "allowlist"
     },
     {
@@ -151,7 +151,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/contract.ts",
-      "sha256": "b13ac10368ad656667be8f3c117bc7742b116cc7960db920493421b3a63f5829",
+      "sha256": "9320ee0ea8eb3a1e04a677f965ad7b948feeb0bf941742fe8725c8c83a2f8762",
       "origin": "allowlist"
     },
     {
@@ -161,7 +161,7 @@
     },
     {
       "path": "lambda/functions/faq-chat/adapters/remote/README.md",
-      "sha256": "e4b9f573a84b13aebc580f08df32744ec02f701ddeb761d043c47c580a9d460e",
+      "sha256": "7a6cb53423e5819f36be322c795aeff3bbfed1859b41d97f982d880212429cd4",
       "origin": "allowlist"
     },
     {
@@ -245,8 +245,18 @@
       "origin": "allowlist"
     },
     {
+      "path": "lambda/functions/faq-chat/source-url-policy.d.mts",
+      "sha256": "4eb4dbf924cbb6486256ec0645d1f630556ebb14f676f1ded44a7c9c94cf3bb0",
+      "origin": "allowlist"
+    },
+    {
+      "path": "lambda/functions/faq-chat/source-url-policy.mjs",
+      "sha256": "ae75cb2e90bf1b63e040235a41548080ce3ede81da11569b4673017562c36b72",
+      "origin": "allowlist"
+    },
+    {
       "path": "lambda/functions/faq-chat/source-url.ts",
-      "sha256": "b0ec7722d9961f8536c4463de4f4cb1680fe2a7fbb143590b2f399e0e4b64ff6",
+      "sha256": "58c4ffc88ef51c0699f43bef10c2709594ed3a9f1f66aff58da29e29a2994b22",
       "origin": "allowlist"
     },
     {
@@ -331,7 +341,7 @@
     },
     {
       "path": "lambda/shared/public/slack-agent-ports.ts",
-      "sha256": "2a9573cac4181cbd8bb2c9dff9b206a4fb350fe10678481924ce29bbb70127b8",
+      "sha256": "b8ae42aa69b08012b5f52a6819c38930f559402632575764d56ff2ce892104a0",
       "origin": "allowlist"
     },
     {
@@ -341,7 +351,7 @@
     },
     {
       "path": "lambda/shared/public/slack-api.ts",
-      "sha256": "4f28d2f826b4e9333e034b1f0fb880f6ba2870d93dd28d91e07d594cb179149a",
+      "sha256": "883cd820dc4821c6299d37c1a67a390511560554152da711520a88b1de23b664",
       "origin": "allowlist"
     },
     {
@@ -351,7 +361,7 @@
     },
     {
       "path": "lambda/shared/public/slack-ingress-core.ts",
-      "sha256": "4cfa484b146946cb58ab02eec3edeeebf82129d828d1922fb3f28ab5fd611116",
+      "sha256": "a79516d0d94381989843669913cf928f87705047ce654b6f99c0017d102c6f16",
       "origin": "allowlist"
     },
     {
@@ -361,7 +371,7 @@
     },
     {
       "path": "lambda/shared/public/slack-worker-core.ts",
-      "sha256": "d6405b2f2e409695fe627d6769084044859bf1696bd5f1d775066820593408b3",
+      "sha256": "3928c7c44e53560faa0cd9856cf3fdaaa9fddb297970dfe9ecdfe1cf5d4db5f4",
       "origin": "allowlist"
     },
     {

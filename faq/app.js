@@ -54,7 +54,7 @@
   var sendBtn = document.getElementById('send-btn');
   var clearBtn = document.getElementById('clear-btn');
 
-  /** @type {{role:string, content:string, sources?:{topic:string,url?:string}[]}[]} */
+  /** @type {{role:string, content:string, sources?:{entryId?:string,topic:string,url?:string}[]}[]} */
   var history = loadHistory();
 
   function loadHistory() {
@@ -104,6 +104,25 @@
     body.appendChild(bubbleEl);
     row.appendChild(body);
     return { row: row, body: body };
+  }
+
+  function appendSupportCta(body, supportSource) {
+    var configuredSupport = (window.FAQ_CONFIG && window.FAQ_CONFIG.supportLink) || {};
+    // サーバーの先頭のサポート導線を優先し、導線がない応答だけ config にフォールバック。
+    var supportLink = supportSource || configuredSupport;
+    if (typeof supportLink.url !== 'string' || !/^https:\/\//.test(supportLink.url)) return;
+    // サーバーの topic は旧 UI の「参考:」欄との後方互換用の名詞形なので、ボタン文言には使わない。
+    // ボタンは動詞形に統一し、FAQ_CONFIG.supportLink.label → 既定文言の順で決める。
+    var label =
+      (typeof configuredSupport.label === 'string' && configuredSupport.label.trim()) ||
+      '公式LINEで問い合わせる';
+    var link = document.createElement('a');
+    link.className = 'support-cta';
+    link.href = supportLink.url;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = '💬 ' + label;
+    body.appendChild(link);
   }
 
   function submitForm() {
@@ -161,13 +180,27 @@
       } else {
         var ar = assistantRow(bubble);
         row = ar.row;
-        if (m.sources && m.sources.length > 0) {
+        var sources = [];
+        var supportSource = null;
+        (Array.isArray(m.sources) ? m.sources : []).forEach(function (s) {
+          if (!s || typeof s !== 'object') return;
+          if (
+            typeof s.entryId === 'string' &&
+            (s.entryId === 'support-link' || s.entryId.indexOf('support-link:') === 0)
+          ) {
+            if (!supportSource) supportSource = s;
+          } else {
+            sources.push(s);
+          }
+        });
+        appendSupportCta(ar.body, supportSource);
+        if (sources.length > 0) {
           var srcWrap = document.createElement('div');
           srcWrap.className = 'sources';
           var label = document.createElement('span');
           label.textContent = '参考: ';
           srcWrap.appendChild(label);
-          m.sources.forEach(function (s, i) {
+          sources.forEach(function (s, i) {
             if (i > 0) srcWrap.appendChild(document.createTextNode(' / '));
             if (s.url && /^https:\/\//.test(s.url)) {
               var a = document.createElement('a');
@@ -226,9 +259,12 @@
 
   function showTransient(text) {
     var note = document.createElement('p');
-    note.className = 'transient';
+    note.className = 'bubble transient';
     note.textContent = text;
-    messagesEl.appendChild(note);
+    var ar = assistantRow(note);
+    // 接続先未設定などの配信設定エラー時も、顧客が連絡先に辿れるよう CTA を表示する。
+    appendSupportCta(ar.body);
+    messagesEl.appendChild(ar.row);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
