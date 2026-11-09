@@ -124,6 +124,8 @@ export interface SlackAgentRuntimeBoundary<TTrustClass extends string> {
   trustClass: TTrustClass;
   kbTableName: string;
   qaLogTableName?: string;
+  channelPolicy?: 'channels-and-dm' | 'dm-only';
+  qaLogMode?: 'table' | 'forbidden';
 }
 
 export type SlackAgentJobPolicyDecision = 'process' | 'ack';
@@ -154,7 +156,10 @@ export interface SlackAgentPolicyPort<TTrustClass extends string> {
    * resolveEffectiveAgentLogPolicy が消費 / レビュー指摘）。
    */
   readonly qaLogPolicyOverrides: Readonly<Partial<Record<TTrustClass, SlackAgentLogPolicy>>>;
-  inspectJob(job: SlackAgentJob<TTrustClass>): SlackAgentJobPolicyDecision;
+  inspectJob(
+    job: SlackAgentJob<TTrustClass>,
+    runtime: SlackAgentRuntimeBoundary<TTrustClass>
+  ): SlackAgentJobPolicyDecision;
   assertAgentConfigBoundary(
     config: SlackAgentResolvedConfig | null,
     runtime: SlackAgentRuntimeBoundary<TTrustClass>

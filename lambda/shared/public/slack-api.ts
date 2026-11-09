@@ -16,7 +16,15 @@ export const MAX_SLACK_REPLIES_PAGES = 5;
 export type SlackApiMethod =
   | 'chat.postMessage'
   | 'conversations.replies'
-  | 'conversations.history';
+  | 'conversations.history'
+  | 'users.info';
+
+const SLACK_API_ENCODING: Record<SlackApiMethod, 'json' | 'form'> = {
+  'chat.postMessage': 'json',
+  'conversations.replies': 'form',
+  'conversations.history': 'form',
+  'users.info': 'form',
+};
 
 export type SlackApiErrorKind =
   | 'configuration'
@@ -93,8 +101,29 @@ export interface SlackGetRepliesParams extends SlackConversationRangeParams {
 
 export type SlackGetHistoryParams = SlackConversationRangeParams;
 
+/** Only authorization fields are retained; the worker validates their runtime types. */
+export interface SlackUserInfo {
+  id: unknown;
+  team_id: unknown;
+  is_restricted: unknown;
+  is_ultra_restricted: unknown;
+  deleted: unknown;
+  is_bot: unknown;
+}
+
+export type SlackGetUserInfoResult =
+  | { kind: 'user'; user: SlackUserInfo }
+  | { kind: 'missing_user' }
+  | { kind: 'invalid_user' };
+
+export interface SlackGetUserInfoParams {
+  user: string;
+}
+
 export interface SlackApiClient {
   postMessage(params: SlackPostMessageParams): Promise<SlackPostMessageResult>;
+  /** Requires ok:true, but preserves malformed authorization fields for fail-closed classification. */
+  getUserInfo(params: SlackGetUserInfoParams): Promise<SlackGetUserInfoResult>;
   /** Returns cursor pages in Slack's chronological order. */
   getReplies(params: SlackGetRepliesParams): Promise<SlackMessage[]>;
   /** Returns Slack's order unchanged (history is normally newest first). */
@@ -300,6 +329,28 @@ export function createSlackApiClient(
   const fetchImpl = options.fetchImpl ?? fetch;
 
   async function request(method: SlackApiMethod, body: JsonObject): Promise<JsonObject> {
+    // Encode before the try so an encoding failure is not misreported as a network error.
+    const isForm = SLACK_API_ENCODING[method] === 'form';
+    let encodedBody: string;
+    if (isForm) {
+      // Form requests carry only string/number/boolean scalars (see addConversationRange).
+      const form = new URLSearchParams();
+      for (const [key, value] of Object.entries(body)) {
+        if (value === undefined) continue;
+        if (
+          typeof value !== 'string' &&
+          typeof value !== 'number' &&
+          typeof value !== 'boolean'
+        ) {
+          invalidRequest(method, key);
+        }
+        form.set(key, String(value));
+      }
+      encodedBody = form.toString();
+    } else {
+      encodedBody = JSON.stringify(body);
+    }
+
     const signal = AbortSignal.timeout(timeoutMs);
     let response: Response;
     try {
@@ -307,10 +358,12 @@ export function createSlackApiClient(
         method: 'POST',
         headers: {
           Accept: 'application/json',
-          'Content-Type': 'application/json; charset=utf-8',
+          'Content-Type': isForm
+            ? 'application/x-www-form-urlencoded; charset=utf-8'
+            : 'application/json; charset=utf-8',
           Authorization: `Bearer ${botToken}`,
         },
-        body: JSON.stringify(body),
+        body: encodedBody,
         signal,
       });
     } catch {
@@ -330,10 +383,20 @@ export function createSlackApiClient(
 
     let data: unknown;
     let hasValidJson = true;
+    let jsonReadErrorKind: 'invalid_json' | 'timeout' | 'network' = 'invalid_json';
     try {
       data = await response.json();
-    } catch {
+    } catch (error) {
       hasValidJson = false;
+      // users.infoの判定では、JSON構文不正と本文受信中の通信失敗を分離する。
+      // 他メソッドの既存分類は変えず、HTTPエラーは引き続き下の判定で優先する。
+      if (method === 'users.info') {
+        jsonReadErrorKind = signal.aborted
+          ? 'timeout'
+          : error instanceof SyntaxError
+            ? 'invalid_json'
+            : 'network';
+      }
     }
 
     if (!response.ok) {
@@ -350,9 +413,13 @@ export function createSlackApiClient(
 
     if (!hasValidJson) {
       throw new SlackApiError({
-        kind: 'invalid_json',
+        kind: jsonReadErrorKind,
         method,
-        message: `Slack ${method} returned invalid JSON`,
+        message: jsonReadErrorKind === 'invalid_json'
+          ? `Slack ${method} returned invalid JSON`
+          : jsonReadErrorKind === 'timeout'
+            ? `Slack ${method} request timed out`
+            : `Slack ${method} request failed`,
       });
     }
     if (!isJsonObject(data) || typeof data.ok !== 'boolean') {
@@ -376,11 +443,34 @@ export function createSlackApiClient(
   }
 
   return {
+    async getUserInfo(params: SlackGetUserInfoParams): Promise<SlackGetUserInfoResult> {
+      const method: SlackApiMethod = 'users.info';
+      const data = await request(method, {
+        user: requireRequestString(params.user, 'user', method),
+      });
+      if (data.user === undefined || data.user === null) return { kind: 'missing_user' };
+      if (!isJsonObject(data.user)) return { kind: 'invalid_user' };
+      const user = data.user;
+      return {
+        kind: 'user',
+        user: {
+          id: user.id,
+          team_id: user.team_id,
+          is_restricted: user.is_restricted,
+          is_ultra_restricted: user.is_ultra_restricted,
+          deleted: user.deleted,
+          is_bot: user.is_bot,
+        },
+      };
+    },
+
     async postMessage(params: SlackPostMessageParams): Promise<SlackPostMessageResult> {
       const method: SlackApiMethod = 'chat.postMessage';
       const body: JsonObject = {
         channel: requireRequestString(params.channel, 'channel', method),
         text: requireRequestString(params.text, 'text', method),
+        unfurl_links: false,
+        unfurl_media: false,
       };
       if (params.threadTs !== undefined) {
         body.thread_ts = requireRequestString(params.threadTs, 'threadTs', method);

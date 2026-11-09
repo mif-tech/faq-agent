@@ -75,7 +75,7 @@ async function enqueue<TTrustClass extends string>(
   job: SlackAgentJob<TTrustClass>,
   queueUrl: string,
   queue: SlackIngressQueuePort
-): Promise<void> {
+): Promise<string> {
   const groupId = sha256(
     effectiveThreadKey({
       channelType: job.channelType,
@@ -94,6 +94,7 @@ async function enqueue<TTrustClass extends string>(
     },
     { abortSignal: AbortSignal.timeout(ENQUEUE_TIMEOUT_MS) }
   );
+  return deduplicationId;
 }
 
 function rejectedStatus(stage: 'signature' | 'payload' | 'event', reason: string): number {
@@ -185,8 +186,9 @@ export async function runSlackIngress<TTrustClass extends string>(
     receivedAt: new Date().toISOString(),
   };
 
+  let dedupId: string;
   try {
-    await enqueue(job, runtime.queueUrl, queue);
+    dedupId = await enqueue(job, runtime.queueUrl, queue);
   } catch (error) {
     console.error(
       JSON.stringify({
@@ -200,6 +202,18 @@ export async function runSlackIngress<TTrustClass extends string>(
     // 2xxにしない。Slack Events APIの再送が durable retry の入口になる。
     return jsonResponse(503, { error: 'Slack event was not enqueued' });
   }
+
+  console.log(
+    JSON.stringify({
+      metric: 'slack_ingress_enqueued',
+      agentId: runtime.agentId,
+      trustClass: runtime.trustClass,
+      sourceEventId: job.eventId,
+      channel: job.channel,
+      channelType: job.channelType,
+      dedupId,
+    })
+  );
 
   return jsonResponse(200, { ok: true });
 }

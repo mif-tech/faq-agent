@@ -14,6 +14,7 @@ import {
 import type { FaqRetrievalHints } from '../../ports/retrieval.js';
 import { containsUrl } from '../../envelope.js';
 import { isPublishableSourceUrl } from '../../source-url.js';
+import { FAQ_SOURCE_LIMITS } from '../../source-url-policy.mjs';
 
 export { FAQ_RAG_CONTRACT_VERSION, FAQ_RAG_ERROR_CODES };
 
@@ -36,8 +37,7 @@ export const REMOTE_V1_LIMITS = {
   answerCodePoints: 16_000,
   sourceCount: 5,
   sourceEntryIdCodePoints: 512,
-  sourceTopicCodePoints: 512,
-  sourceUrlCodePoints: 2_048,
+  ...FAQ_SOURCE_LIMITS,
 } as const;
 
 /**

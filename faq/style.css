@@ -1,12 +1,14 @@
 /* 公開FAQチャット UI — 外部リソースなしの自己完結スタイル
    トーン: 特定テナントのブランド色に寄せないブルー基調（紫系は「いかにもAI」の指摘で不採用） */
-/* 白文字を載せる面は WCAG AA (4.5:1) を満たす濃さにする:
+/* 青系の白文字を載せる面は WCAG AA (4.5:1) を満たす濃さにする:
    #2563eb=5.1:1 / #1d4ed8=6.7:1（#3b82f6以浅は未達のため不使用）。
    --accent-deep はグラデ終端と14px未満の小さめ文字用（チップ・summary・出典リンクで統一） */
 :root {
   --accent: #2563eb;
   --accent-deep: #1d4ed8;
   --accent-grad: linear-gradient(135deg, #2563eb, #1d4ed8);
+  --support: #05823a; /* 白文字で WCAG AA 4.9:1（LINE 純正 #06C755 は 2.3:1 で未達） */
+  --support-deep: #047a33;
   --ink: #1e293b;
   --ink-soft: #64748b;
   --ink-faint: #94a3b8; /* 装飾・ヒント用。本文や必読文言には使わない（AA未達） */
@@ -103,7 +105,7 @@ body {
 .transient { font-size: 12px; color: #64748b; color: var(--ink-soft); text-align: center; padding: 8px; }
 .msg { display: flex; }
 .msg-user { justify-content: flex-end; }
-/* assistant はアバター + 本文列（吹き出し + 出典）の横並び。
+/* assistant はアバター + 本文列（吹き出し + サポート導線 + 出典）の横並び。
    アバターは上端揃え（下端揃えだと出典行がある回答で吹き出しから離れて下がる） */
 .msg-assistant { justify-content: flex-start; align-items: flex-start; gap: 8px; }
 .msg-assistant .avatar { width: 26px; height: 26px; background-size: 14px 14px, cover; }
@@ -144,6 +146,12 @@ body {
   border: 1px solid var(--line);
   border-bottom-left-radius: 6px;
 }
+.msg-assistant .bubble.transient {
+  color: #64748b;
+  color: var(--ink-soft);
+  text-align: left;
+  font-size: 13px;
+}
 /* 「回答中です…」の仮吹き出し（点滅ドット。reduce-motion では静止） */
 .bubble.typing { color: var(--ink-soft); }
 .typing-dots span {
@@ -159,6 +167,27 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .typing-dots span { animation: none; }
 }
+.support-cta {
+  display: block;
+  align-self: stretch;
+  min-height: 44px;
+  margin: 8px 0;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #05823a;
+  background: var(--support);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.7;
+  text-align: center;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.support-cta:hover { background: #047a33; background: var(--support-deep); }
+.support-cta:focus-visible { outline: 2px solid #2563eb; outline: 2px solid var(--accent); outline-offset: 2px; }
 .sources { font-size: 11px; color: var(--ink-soft); margin-top: 6px; }
 /* リンクは常時下線（タッチ・キーボード利用時に色以外の識別手段を残す） */
 .sources a { color: #1d4ed8; color: var(--accent-deep); text-decoration: underline; }
