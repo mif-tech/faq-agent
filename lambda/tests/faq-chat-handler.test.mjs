@@ -33,11 +33,12 @@ await build({
     contents: [
       `import { createFaqHandler } from ${JSON.stringify(handlerPath)};`,
       'let activeHandler;',
-      "export function __setFaqPortsForTest(ports, remoteRag) { activeHandler = createFaqHandler(ports, remoteRag && ('kind' in remoteRag ? remoteRag : { kind: 'split-v1', port: remoteRag })); }",
+      "export function __setFaqPortsForTest(ports, remoteRag, options) { activeHandler = createFaqHandler(ports, remoteRag && ('kind' in remoteRag ? remoteRag : { kind: 'split-v1', port: remoteRag }), options); }",
       "export async function handler(event, context) { if (!activeHandler) throw new Error('FAQ test handler is not configured'); return activeHandler(event, context); }",
       `export { createStubFaqPorts } from ${JSON.stringify(stubPath)};`,
       `export { createFreeFaqPorts } from ${JSON.stringify(freePath)};`,
       `export { parseRemoteV1RetrieveRequest } from ${JSON.stringify(remoteContractPath)};`,
+      `export { createRemoteFaqRagHttpClient, createRemoteFaqRagAnswerHttpClient } from ${JSON.stringify(path.join(FAQ_ROOT, 'adapters', 'remote', 'http-client.ts'))};`,
       `export { runFaqEntrypoint } from ${JSON.stringify(path.join(FAQ_ROOT, 'shell-timing.ts'))};`,
     ].join('\n'),
     loader: 'ts',
@@ -47,6 +48,7 @@ await build({
   bundle: true,
   format: 'esm',
   platform: 'node',
+  banner: { js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);" },
   target: 'node22',
   outfile,
   // 未モックの shared import 等は実行時の undefined ではなくビルド警告として見えるようにする
@@ -122,6 +124,8 @@ const {
   __setFaqPortsForTest,
   createFreeFaqPorts,
   createStubFaqPorts,
+  createRemoteFaqRagHttpClient,
+  createRemoteFaqRagAnswerHttpClient,
   handler,
   parseRemoteV1RetrieveRequest,
   runFaqEntrypoint,
@@ -1776,9 +1780,293 @@ test('one-shot shell keeps router timing separate and sends one sanitized answer
   } finally { Date.now = originalNow; }
 });
 
+function localProcessingTransport(kind, operation, { status = 403, code = 'local_processing_required', beforeResponse } = {}) {
+  const requests = [];
+  const options = {
+    env: { FAQ_REMOTE_RAG_BASE_URL: 'https://example.test/api', AWS_REGION: 'us-west-2' },
+    credentialsProvider: async () => ({ accessKeyId: 'test-key', secretAccessKey: 'test-secret' }),
+    retrieveMaxRetries: 0,
+    fetch: async (url) => {
+      const currentOperation = new URL(url).pathname.split('/').at(-1);
+      requests.push(currentOperation);
+      if (currentOperation === 'retrieve' && operation === 'generate') {
+        return new Response(JSON.stringify({
+          contractVersion: 'remote-v1', ok: true,
+          sessionToken: '9f1c2d3e-4a5b-4c6d-8e7f-1029384756ab',
+          expiresAtEpochMs: Date.now() + 60_000,
+        }), { status: 200 });
+      }
+      beforeResponse?.();
+      const body = code === 'forbidden' ? { message: 'Forbidden' } : {
+        contractVersion: kind === 'one-shot-v1' ? 'remote-one-shot-v1' : 'remote-v1',
+        ok: false, error: { code, retryable: code === 'kill_switch' },
+      };
+      return new Response(JSON.stringify(body), { status });
+    },
+  };
+  return {
+    transport: { kind, port: kind === 'one-shot-v1'
+      ? createRemoteFaqRagAnswerHttpClient(options) : createRemoteFaqRagHttpClient(options) },
+    requests,
+  };
+}
+
+for (const [kind, operation] of [['split-v1', 'retrieve'], ['split-v1', 'generate'], ['one-shot-v1', 'answer']]) {
+  for (const mode of ['answer', 'emptyKey', 'invalidKey', 'emptyKb', 'unmatchedKb']) {
+    test(`${kind} ${operation} local processing uses free ${mode} and finalizes once`, async () => {
+      const ports = createStubFaqPorts({
+        retrieval: 'normal', entries: [NORMAL_ENTRY],
+        settings: { enabled: true, model: 'remote-model', smalltalkMode: 'generated' },
+      });
+      let routerCalls = 0;
+      ports.smalltalkGeneration.complete = async () => {
+        routerCalls += 1;
+        return { text: JSON.stringify({
+          route: 'faq_or_action', speech_acts: [], has_business_topic: true,
+          has_information_request: true, has_action_request: false,
+          has_prompt_injection: false, has_sensitive_topic: false,
+        }), inputTokens: 1, outputTokens: 1, stopReason: 'end_turn' };
+      };
+      const lifecycle = [];
+      ports.inflight.acquire = async () => {
+        lifecycle.push('acquire');
+        return { kind: 'acquired', slot: 0, async release() { lifecycle.push('release'); } };
+      };
+      const notifications = [];
+      ports.storage.notifyQaLog = async (record) => { notifications.push(record); };
+      let loads = 0;
+      const generations = [];
+      const freeAnswerPorts = createFreeFaqPorts({
+        apiKey: mode === 'emptyKey' ? '' : 'test-key',
+        kbSource: { async loadPublicEntries() {
+          loads += 1;
+          return mode === 'emptyKb' ? [] : mode === 'unmatchedKb'
+            ? [{ id: 'unrelated', topic: 'Address', content: 'Central Avenue' }] : SAMPLE_KB;
+        } },
+        client: { messages: { async create(request) {
+          generations.push(request);
+          if (mode === 'invalidKey') throw new Error('invalid key');
+          return {
+            stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 10 },
+            content: [{ type: 'text', text: JSON.stringify({
+              responseType: 'answer', answer: '営業時間は平日の午前9時から午後6時までです。',
+              clarifyingQuestion: '', sourceRefs: ['K1'],
+            }) }],
+          };
+        } } },
+      });
+      const { transport, requests } = localProcessingTransport(kind, operation);
+      __setFaqPortsForTest(ports, transport, { freeAnswerPorts });
+      const { response, body, captured } = await invoke({
+        messages: [{ role: 'user', content: '営業時間は何時から何時までですか' }],
+      });
+      assert.equal(response.statusCode, mode === 'invalidKey' ? 503 : 200);
+      assert.equal(loads, 1);
+      assert.equal(routerCalls, 1);
+      assert.equal(ports.retrieval.calls.length, 0);
+      assert.equal(ports.answerGeneration.calls.length, 0);
+      assert.deepEqual(requests, operation === 'generate' ? ['retrieve', 'generate'] : [operation]);
+      assert.deepEqual(lifecycle, ['acquire', 'release']);
+      assert.equal(ports.storage.qaLogs.length, mode === 'invalidKey' ? 0 : 1);
+      assert.equal(notifications.length, mode === 'invalidKey' ? 0 : 1);
+      if (mode !== 'invalidKey') {
+        assert.equal(notifications[0].answer, body.answer.normalize('NFKC'));
+        assert.equal(ports.storage.qaLogs[0].answer, body.answer.normalize('NFKC'));
+      }
+      assert.equal(faqMetrics(captured).length, 1);
+      assert.equal(lastFaqMetric(captured).remote_http_calls, requests.length);
+      if (mode === 'answer' || mode === 'emptyKey') {
+        assert.equal(body.responseType, 'kb_answer');
+        assert.equal(body.sources[0].entryId, 'sample-kb-hours');
+        assert.equal(lastFaqMetric(captured).model, freeAnswerPorts.defaultModel);
+        if (mode === 'emptyKey') {
+          assert.equal(generations.length, 0);
+          assert.match(body.answer, /ローカル・キーワードモード/u);
+        } else {
+          assert.equal(generations.length, 1);
+          assert.equal(generations[0].model, freeAnswerPorts.defaultModel);
+          assert.match(generations[0].system, /<knowledge_base>/u);
+          assert.doesNotMatch(body.answer, /ローカル・キーワードモード/u);
+        }
+      } else {
+        assert.equal(body.responseType, 'refuse');
+        assert.equal(lastFaqMetric(captured).route, mode === 'invalidKey' ? 'refuse_model_error' : 'refuse_no_hit');
+        assert.equal(generations.length, mode === 'invalidKey' ? 1 : 0);
+        assert.doesNotMatch(response.body, /ローカル・キーワードモード/u);
+      }
+    });
+  }
+
+  for (const [status, code] of [[403, 'forbidden'], [503, 'kill_switch']]) {
+    test(`${kind} ${operation} ${code} keeps the remote failure without local work`, async () => {
+      const ports = createStubFaqPorts({ settings: { enabled: true } });
+      const freeAnswerPorts = createFreeFaqPorts({ apiKey: '', kbSource: {
+        async loadPublicEntries() { assert.fail('local KB must not be read'); },
+      } });
+      const { transport, requests } = localProcessingTransport(kind, operation, { status, code });
+      __setFaqPortsForTest(ports, transport, { freeAnswerPorts });
+      const { response, captured } = await invoke({ messages: [{ role: 'user', content: '営業時間は？' }] });
+      assert.equal(response.body, TECHNICAL_FALLBACK_BODY);
+      assert.equal(lastFaqMetric(captured).route, 'refuse_remote_error');
+      assert.deepEqual(requests, operation === 'generate' ? ['retrieve', 'generate'] : [operation]);
+      assert.equal(ports.storage.qaLogs.length, 1);
+    });
+  }
+
+  for (const withContext of [true, false]) {
+    test(`${kind} ${operation} checks remaining time before local retrieval with context=${withContext}`, async () => {
+      const originalNow = Date.now;
+      let now = 1_900_000_000_000;
+      Date.now = () => now;
+      try {
+        const ports = createStubFaqPorts({ settings: { enabled: true } });
+        const freeAnswerPorts = createFreeFaqPorts({ apiKey: '', kbSource: {
+          async loadPublicEntries() { assert.fail('exhausted budget must skip local KB'); },
+        } });
+        const { transport } = localProcessingTransport(kind, operation, {
+          beforeResponse() { now += withContext ? 24_000 : 16_000; },
+        });
+        __setFaqPortsForTest(ports, transport, { freeAnswerPorts });
+        const { response, body, captured } = await invoke(
+          { messages: [{ role: 'user', content: '営業時間は？' }] }, withContext ? TEST_CONTEXT : {},
+        );
+        assert.equal(response.statusCode, 200);
+        assert.equal(body.failureKind, 'time_budget');
+        assert.equal(lastFaqMetric(captured).route, 'refuse_time_budget');
+        assert.equal(ports.storage.qaLogs.length, 1);
+      } finally { Date.now = originalNow; }
+    });
+  }
+
+  for (const retrievalMs of [1_000, 6_000]) {
+    test(`${kind} ${operation} subtracts remote and ${retrievalMs}ms retrieval from local generation`, async () => {
+      const originalNow = Date.now;
+      let now = 1_900_000_000_000;
+      Date.now = () => now;
+      try {
+        const ports = createStubFaqPorts({ settings: { enabled: true } });
+        let generationTimeout;
+        const freeAnswerPorts = createFreeFaqPorts({ apiKey: '', kbSource: {
+          async loadPublicEntries() { now += retrievalMs; return SAMPLE_KB; },
+        } });
+        const generate = freeAnswerPorts.answerGeneration.generate;
+        freeAnswerPorts.answerGeneration.generate = (request) => {
+          generationTimeout = request.timeoutMs;
+          return generate(request);
+        };
+        const { transport } = localProcessingTransport(kind, operation, { beforeResponse() { now += 17_000; } });
+        __setFaqPortsForTest(ports, transport, { freeAnswerPorts });
+        const { body, captured } = await invoke({ messages: [{ role: 'user', content: '営業時間は？' }] });
+        if (retrievalMs === 1_000) {
+          assert.equal(body.responseType, 'kb_answer');
+          assert.equal(generationTimeout, 9_500);
+        } else {
+          assert.equal(body.failureKind, 'time_budget');
+          assert.equal(lastFaqMetric(captured).route, 'refuse_time_budget');
+          assert.equal(generationTimeout, undefined);
+        }
+        assert.equal(ports.storage.qaLogs.length, 1);
+      } finally { Date.now = originalNow; }
+    });
+  }
+
+  for (const [limit, lambdaRemainingMs, retrievalBudgetMs] of [
+    ['remote deadline', 15_000, 10_500],
+    ['Lambda remaining time', 9_000, 6_500],
+  ]) {
+    test(`${kind} ${operation} bounds local retrieval by ${limit} and handles late rejection`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const originalNow = Date.now;
+      let now = 1_900_000_000_000;
+      let remainingMs = 30_000;
+      Date.now = () => now;
+      let markRetrievalStarted;
+      const retrievalStarted = new Promise((resolve) => { markRetrievalStarted = resolve; });
+      let rejectRetrieval;
+      const retrieval = new Promise((_resolve, reject) => { rejectRetrieval = reject; });
+      let pending;
+      try {
+        const ports = createStubFaqPorts({ settings: { enabled: true } });
+        const lifecycle = [];
+        ports.inflight.acquire = async () => {
+          lifecycle.push('acquire');
+          return { kind: 'acquired', slot: 0, async release() { lifecycle.push('release'); } };
+        };
+        let notifications = 0;
+        ports.storage.notifyQaLog = async () => { notifications += 1; };
+        let loads = 0;
+        let generations = 0;
+        const freeAnswerPorts = createFreeFaqPorts({ apiKey: '', kbSource: {
+          async loadPublicEntries() {
+            loads += 1;
+            markRetrievalStarted();
+            return retrieval;
+          },
+        } });
+        const generate = freeAnswerPorts.answerGeneration.generate;
+        freeAnswerPorts.answerGeneration.generate = (request) => {
+          generations += 1;
+          return generate(request);
+        };
+        const { transport, requests } = localProcessingTransport(kind, operation, {
+          beforeResponse() {
+            now += 17_000;
+            remainingMs = lambdaRemainingMs;
+          },
+        });
+        __setFaqPortsForTest(ports, transport, { freeAnswerPorts });
+        let settled = false;
+        pending = invoke(
+          { messages: [{ role: 'user', content: '営業時間は？' }] },
+          { getRemainingTimeInMillis: () => remainingMs },
+        ).finally(() => { settled = true; });
+        await retrievalStarted;
+        await new Promise(setImmediate);
+        now += retrievalBudgetMs - 1;
+        remainingMs -= retrievalBudgetMs - 1;
+        t.mock.timers.tick(retrievalBudgetMs - 1);
+        await new Promise(setImmediate);
+        assert.equal(settled, false);
+        assert.equal(ports.storage.qaLogs.length, 0);
+
+        now += 1;
+        remainingMs -= 1;
+        t.mock.timers.tick(1);
+        await new Promise(setImmediate);
+        assert.equal(settled, true);
+        const { response, body, captured } = await pending;
+        assert.equal(response.statusCode, 200);
+        assert.equal(body.responseType, 'refuse');
+        assert.equal(body.failureKind, 'time_budget');
+        assert.equal(lastFaqMetric(captured).route, 'refuse_time_budget');
+        assert.equal(faqMetrics(captured).length, 1);
+        assert.equal(ports.storage.qaLogs.length, 1);
+        assert.equal(ports.storage.qaLogs[0].route, 'refuse_time_budget');
+        assert.equal(notifications, 1);
+        assert.equal(loads, 1);
+        assert.equal(generations, 0);
+        assert.equal(ports.retrieval.calls.length, 0);
+        assert.equal(ports.answerGeneration.calls.length, 0);
+        assert.deepEqual(requests, operation === 'generate' ? ['retrieve', 'generate'] : [operation]);
+        assert.deepEqual(lifecycle, ['acquire', 'release']);
+
+        rejectRetrieval(new Error('retrieval failed after timeout'));
+        await new Promise(setImmediate);
+        assert.equal(ports.storage.qaLogs.length, 1);
+        assert.equal(notifications, 1);
+        assert.equal(generations, 0);
+        assert.deepEqual(lifecycle, ['acquire', 'release']);
+      } finally {
+        rejectRetrieval(new Error('retrieval stopped'));
+        try { await pending; } finally { Date.now = originalNow; }
+      }
+    });
+  }
+}
+
 for (const code of ['no_match', 'remote_transport_unsupported', 'invalid_contract', 'kill_switch',
   'quota_exceeded', 'deadline_exceeded', 'retrieval_failed', 'generation_failed', 'unexpected_rejection']) {
-  test(`one-shot shell ${code} never falls back or repeats the answer`, async () => {
+  test(`one-shot shell ${code} does not select free adapters or repeat the answer`, async () => {
     const ports = createStubFaqPorts({ retrieval: 'normal', entries: [NORMAL_ENTRY], settings: { enabled: true } });
     let calls = 0;
     __setFaqPortsForTest(ports, { kind: 'one-shot-v1', port: {
@@ -1793,7 +2081,9 @@ for (const code of ['no_match', 'remote_transport_unsupported', 'invalid_contrac
       },
       async retrieve() { assert.fail('split retrieve must not be invoked'); },
       async generate() { assert.fail('split generate must not be invoked'); },
-    } });
+    } }, { freeAnswerPorts: createFreeFaqPorts({ apiKey: '', kbSource: {
+      async loadPublicEntries() { assert.fail('local KB must not be read'); },
+    } }) });
     const { response, body, captured } = await invoke({ messages: [{ role: 'user', content: '料金を教えてください' }] });
     assert.equal(calls, 1);
     if (code !== 'no_match') assert.equal(response.body, TECHNICAL_FALLBACK_BODY);

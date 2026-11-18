@@ -32,7 +32,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2, Context } from 'aws-lambda';
-import type { FaqPorts } from './ports/index.js';
+import type { FaqAnswerPorts, FaqPorts } from './ports/index.js';
 import type { FaqInflightLease } from './ports/inflight.js';
 import { isPublishableSourceUrl } from './source-url.js';
 import {
@@ -46,7 +46,7 @@ import type {
   FaqGenerationMessage,
   FaqGenerationResult,
 } from './ports/generation.js';
-import type { FaqRetrievalHints } from './ports/retrieval.js';
+import type { FaqRetrievalHints, FaqRetrievalResult } from './ports/retrieval.js';
 import type {
   FaqAgentProfile,
   FaqChatSettings,
@@ -1715,6 +1715,7 @@ function remoteRagErrorResponse(
     case 'expired_token':
     case 'quota_exceeded':
     case 'kill_switch':
+    case 'local_processing_required':
     case 'invalid_contract':
     case 'retrieval_failed':
     case 'generation_failed':
@@ -1838,7 +1839,9 @@ async function handleFaqRequest(
       typeof setting.scopeFallbackMessage === 'string' && setting.scopeFallbackMessage.trim().length > 0
         ? setting.scopeFallbackMessage
         : DEFAULT_SCOPE_FALLBACK_MESSAGE;
-    const model = setting.model || faqPorts.defaultModel;
+    let model = setting.model || faqPorts.defaultModel;
+    let answerPorts: FaqAnswerPorts = faqPorts;
+    let remoteDeadlineMs: number | undefined;
 
     // JSON.parse 前のサイズ上限（巨大ボディの早期拒否）
     if ((event.body?.length ?? 0) > 65_536) {
@@ -2035,12 +2038,63 @@ async function handleFaqRequest(
       serialSearchPlan = smalltalk.searchPlan;
     }
 
-    if (remoteTransport) {
+    const respondTimeBudget = async (modelTimeoutMs: number, kbMetricFields = {}) => {
+      recordFaqGenerateBudget({ generate_end_reason: 'skipped' });
+      await settleSmalltalkCalls();
+      const totalMs = Date.now() - startedAt;
+      emitFaqChatMetric({
+        metric: 'faq_chat',
+        ...agentMetricFields,
+        model,
+        route: 'refuse_time_budget',
+        failure_kind: 'time_budget',
+        structured_output_used: structuredOutputUsed,
+        structured_output_fallback: structuredOutputFallback,
+        input_tokens: 0,
+        output_tokens: 0,
+        latency_ms: totalMs,
+        settings_ms: settingsMs,
+        kb_retrieval_ms: kbRetrievalMs,
+        model_ms: 0,
+        model_timeout_ms: modelTimeoutMs,
+        ...smalltalkMetricFields,
+        total_ms: totalMs,
+        ...kbMetricFields,
+        history_messages: sanitized.messages.length,
+        answerable: false,
+        source_count: 0,
+        skipped_model_call: true,
+      });
+      await logFaqQaForRequest({
+        question: sanitized.currentQuestion,
+        answer: TECHNICAL_FALLBACK_MESSAGE,
+        responseType: 'refuse',
+        route: 'refuse_time_budget',
+        failureKind: 'time_budget',
+      });
+      return jsonResponse(200, {
+        ...TECHNICAL_FALLBACK_ENVELOPE,
+        failureKind: 'time_budget',
+      });
+    };
+
+    remoteProcessing: if (remoteTransport) {
       let remoteRetrieveMs = 0;
       let remoteGenerateMs = 0;
       let remoteAnswerMs = 0;
       let remoteHttpCalls = 0;
       const remoteRequests: FaqRagHttpObservation[] = [];
+      const selectFreeAnswerPorts = () => {
+        if (!invocation?.freeAnswerPorts) return false;
+        answerPorts = invocation.freeAnswerPorts;
+        model = answerPorts.defaultModel;
+        Object.assign(agentMetricFields, {
+          remote_http_calls: remoteHttpCalls,
+          remote_requests: remoteRequests,
+          remote_ms: remoteRetrieveMs + remoteGenerateMs + remoteAnswerMs,
+        });
+        return true;
+      };
       const callContext: FaqRagCallContext = {
         onHttpRequest: () => { remoteHttpCalls += 1; },
         onHttpResponse: (observation) => {
@@ -2124,6 +2178,7 @@ async function handleFaqRequest(
 
       if (remoteTransport.kind === 'one-shot-v1') {
         const remainingMs = remoteRagRemainingMs(context);
+        remoteDeadlineMs = Date.now() + remainingMs;
         let answerResponse: FaqRagAnswerResult;
         if (remainingMs - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS <= 0) {
           answerResponse = {
@@ -2154,6 +2209,9 @@ async function handleFaqRequest(
           }
         }
         if (!answerResponse.ok) {
+          if (answerResponse.error.code === 'local_processing_required' && selectFreeAnswerPorts()) {
+            break remoteProcessing;
+          }
           if (answerResponse.error.code === 'busy') return busyResponse(answerResponse.error.retryAfterMs);
           const mapped = remoteRagErrorResponse(answerResponse.error, fallbackMessage);
           return await respondFromRemote(mapped.response, mapped.route, 'answer', answerResponse.error.code);
@@ -2166,6 +2224,7 @@ async function handleFaqRequest(
 
       const faqRagPort = remoteTransport.port;
       const retrieveRemainingMs = remoteRagRemainingMs(context);
+      remoteDeadlineMs = Date.now() + retrieveRemainingMs;
       let retrieveResponse: FaqRagRetrieveResponse;
       if (retrieveRemainingMs - REMOTE_RAG_GENERATE_BUDGET_FLOOR_MS <= 0) {
         retrieveResponse = {
@@ -2197,6 +2256,9 @@ async function handleFaqRequest(
         }
       }
       if (!retrieveResponse.ok) {
+        if (retrieveResponse.error.code === 'local_processing_required' && selectFreeAnswerPorts()) {
+          break remoteProcessing;
+        }
         if (retrieveResponse.error.code === 'busy') return busyResponse(retrieveResponse.error.retryAfterMs);
         if (retrieveResponse.error.code === 'invalid_contract') {
           console.error(
@@ -2249,6 +2311,9 @@ async function handleFaqRequest(
         }
       }
       if (!generateResponse.ok) {
+        if (generateResponse.error.code === 'local_processing_required' && selectFreeAnswerPorts()) {
+          break remoteProcessing;
+        }
         if (generateResponse.error.code === 'busy') return busyResponse(generateResponse.error.retryAfterMs);
         if (generateResponse.error.code === 'invalid_contract') {
           console.error(
@@ -2274,15 +2339,35 @@ async function handleFaqRequest(
       return await respondFromRemote(remoteResponse, remoteRoute, 'complete', null);
     }
 
+    // Keep the remote deadline when starting local retrieval and generation.
+    const localTimeoutMs = remoteDeadlineMs === undefined ? undefined
+      : Math.min(remoteDeadlineMs - Date.now(), remoteRagRemainingMs(context));
+    if (localTimeoutMs !== undefined && localTimeoutMs < MIN_MODEL_TIMEOUT_MS) {
+      return await respondTimeBudget(localTimeoutMs);
+    }
+
     // KB注入（public のみ・検索型）。検索クエリは「現在の質問」のみ（過去質問は混ぜない）。
     // 関連エントリが1件も無ければモデルを呼ぶだけ無駄なので固定文言で即答。
     // 検索プランは generated モードのルーターが返した場合のみ渡る（template_only は常に無し）
     const kbStartedAt = Date.now();
-    const kb = await faqPorts.retrieval.retrieve({
-      question: sanitized.currentQuestion,
-      ...(smalltalkMode === 'generated' ? { hints: serialSearchPlan } : {}),
-    });
+    let retrievalTimer: ReturnType<typeof setTimeout> | undefined;
+    let kb: FaqRetrievalResult | undefined;
+    try {
+      const retrieval = answerPorts.retrieval.retrieve({
+        question: sanitized.currentQuestion,
+        ...(smalltalkMode === 'generated' ? { hints: serialSearchPlan } : {}),
+      });
+      kb = localTimeoutMs === undefined ? await retrieval : await Promise.race([
+        retrieval,
+        new Promise<undefined>((resolve) => {
+          retrievalTimer = setTimeout(() => resolve(undefined), localTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (retrievalTimer !== undefined) clearTimeout(retrievalTimer);
+    }
     kbRetrievalMs = Date.now() - kbStartedAt;
+    if (kb === undefined) return await respondTimeBudget(0);
     const kbMetricFields = {
       kb_corpus_revision: kb.telemetry.corpusRevision,
       kb_retrieval_revision: kb.telemetry.retrievalRevision,
@@ -2371,7 +2456,7 @@ async function handleFaqRequest(
       });
     }
 
-    const systemPrompt = faqPorts.answerPrompt.buildSystemPrompt(
+    const systemPrompt = answerPorts.answerPrompt.buildSystemPrompt(
       setting.systemPrompt || DEFAULT_SYSTEM_PROMPT,
       kb.block
     );
@@ -2380,10 +2465,12 @@ async function handleFaqRequest(
     // Lambda 28s を超えて 502 になる余地があり、フォールバック文言より悪い失敗モードに
     // なる（PRレビュー指摘）。残余-予約が既定20sより短いときだけ縮める
     const remainingMs = context?.getRemainingTimeInMillis?.();
-    const modelTimeoutMs =
+    const availableModelMs =
       typeof remainingMs === 'number'
         ? Math.min(20_000, remainingMs - MODEL_RESPONSE_RESERVE_MS)
         : undefined;
+    const modelTimeoutMs = remoteDeadlineMs === undefined ? availableModelMs
+      : Math.min(availableModelMs ?? 20_000, remoteDeadlineMs - Date.now());
     recordFaqGenerateBudget({
       remaining_at_generate_start_ms: typeof remainingMs === 'number'
         ? Math.max(0, remainingMs - MODEL_RESPONSE_RESERVE_MS) : null,
@@ -2394,44 +2481,7 @@ async function handleFaqRequest(
     // end_turn することは事実上なく、入力分を課金して503になるだけ（PRレビュー指摘）。
     // kb.entryCount===0 の早期returnと同じ 200 + skipped_model_call で返す
     if (modelTimeoutMs !== undefined && modelTimeoutMs < MIN_MODEL_TIMEOUT_MS) {
-      recordFaqGenerateBudget({ generate_end_reason: 'skipped' });
-      await settleSmalltalkCalls();
-      const totalMs = Date.now() - startedAt;
-      emitFaqChatMetric({
-          metric: 'faq_chat',
-          ...agentMetricFields,
-          model,
-          route: 'refuse_time_budget',
-          failure_kind: 'time_budget',
-          structured_output_used: structuredOutputUsed,
-          structured_output_fallback: structuredOutputFallback,
-          input_tokens: 0,
-          output_tokens: 0,
-          latency_ms: totalMs,
-          settings_ms: settingsMs,
-          kb_retrieval_ms: kbRetrievalMs,
-          model_ms: 0,
-          model_timeout_ms: modelTimeoutMs,
-          ...smalltalkMetricFields,
-          total_ms: totalMs,
-          ...kbMetricFields,
-          history_messages: sanitized.messages.length,
-          answerable: false,
-          source_count: 0,
-          skipped_model_call: true,
-        });
-      await logFaqQaForRequest({
-        question: sanitized.currentQuestion,
-        answer: TECHNICAL_FALLBACK_MESSAGE,
-        responseType: 'refuse',
-        route: 'refuse_time_budget',
-        failureKind: 'time_budget',
-      });
-      return jsonResponse(200, {
-        // 時間切れは技術失敗。KBに情報がない場合と同じ文言を返さない
-        ...TECHNICAL_FALLBACK_ENVELOPE,
-        failureKind: 'time_budget',
-      });
+      return await respondTimeBudget(modelTimeoutMs, kbMetricFields);
     }
     const modelStartedAt = Date.now();
     const answerCallObservation: { stopReason: string | null } = { stopReason: null };
@@ -2439,11 +2489,11 @@ async function handleFaqRequest(
     // （フリー版）なら渡さず、structured_output_used も false にする（偽陽性防止）
     const answerJsonSchema =
       supportsClaudeStructuredOutput(model) &&
-      (faqPorts.answerGeneration.supportsStructuredOutput ?? true)
+      (answerPorts.answerGeneration.supportsStructuredOutput ?? true)
         ? FAQ_ENVELOPE_JSON_SCHEMA
         : undefined;
     structuredOutputUsed = answerJsonSchema !== undefined;
-    const completion = await faqPorts.answerGeneration.generate({
+    const completion = await answerPorts.answerGeneration.generate({
       system: systemPrompt,
       messages: sanitized.messages,
       model,
@@ -3019,6 +3069,7 @@ async function handleNamedAgentRequest(
 }
 
 export interface FaqHandlerOptions {
+  freeAnswerPorts?: FaqAnswerPorts;
   /** Embedding seam. Production composition uses randomUUID and ignores request headers. */
   getIdempotencyKey?: (event: APIGatewayProxyEventV2, transport: RemoteFaqTransport['kind']) => string;
 }
@@ -3042,6 +3093,7 @@ export function createFaqHandler(
         ? candidateId : randomUUID(),
       coldStart,
       getIdempotencyKey: options.getIdempotencyKey,
+      freeAnswerPorts: options.freeAnswerPorts,
     };
     coldStart = false;
     return runFaqShellTiming({

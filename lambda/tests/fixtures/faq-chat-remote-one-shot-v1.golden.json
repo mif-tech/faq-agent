@@ -12,6 +12,7 @@
     { "statusCode": 504, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"deadline_exceeded\",\"retryable\":true}}" },
     { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"retrieval_failed\",\"retryable\":true}}" },
     { "statusCode": 502, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"generation_failed\",\"retryable\":true}}" },
-    { "statusCode": 429, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}" }
+    { "statusCode": 429, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}" },
+    { "statusCode": 403, "body": "{\"contractVersion\":\"remote-one-shot-v1\",\"ok\":false,\"error\":{\"code\":\"local_processing_required\",\"retryable\":false}}" }
   ]
 }

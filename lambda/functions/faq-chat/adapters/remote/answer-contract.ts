@@ -20,6 +20,7 @@ export const REMOTE_ONE_SHOT_ANSWER_ERROR_CODES = [
   'invalid_contract',
   'quota_exceeded',
   'kill_switch',
+  'local_processing_required',
   'deadline_exceeded',
   'retrieval_failed',
   'generation_failed',

@@ -704,6 +704,20 @@ export function createRemoteFaqRagHttpClient(
         return { response: invalidContractError() as TResponse, retry: false };
       }
 
+      // Accept local processing only after strict DTO validation and HTTP 403.
+      if (!parsedResponse.ok && parsedResponse.error.code === 'local_processing_required' && response.status !== 403) {
+        const field = `${operation}Response.status`;
+        if (isAuthenticationOrServerFailure(response.status)) {
+          logServerContractFallback(operation, field, response.status, failureCode);
+          return {
+            response: technicalError(failureCode) as TResponse,
+            retry: operation === 'retrieve' && response.status >= 500,
+          };
+        }
+        logContractViolation(operation, 'response', field, response.status);
+        return { response: invalidContractError() as TResponse, retry: false };
+      }
+
       if (parsedResponse.ok !== isHttpSuccess(response.status)) {
         logContractViolation(operation, 'response', `${operation}Response.ok`, response.status);
         return { response: invalidContractError() as TResponse, retry: false };
@@ -814,6 +828,7 @@ const ANSWER_HTTP_STATUS: Readonly<Record<RemoteOneShotAnswerErrorCode, number>>
   invalid_contract: 400,
   quota_exceeded: 429,
   kill_switch: 503,
+  local_processing_required: 403,
   deadline_exceeded: 504,
   retrieval_failed: 502,
   generation_failed: 502,
@@ -964,6 +979,9 @@ export function createRemoteFaqRagAnswerHttpClient(
             return invalidAnswerResponse(response.status,
               error instanceof RemoteOneShotContractValidationError ? error.field : 'answerResponse');
           }
+          if (!parsed.ok && parsed.error.code === 'local_processing_required' && response.status !== 403) {
+            return invalidAnswerResponse(response.status, 'answerResponse.status');
+          }
           if (
             response.status === 501 ||
             (response.status === 404 && (parsed.ok || parsed.error.code !== 'no_match'))
@@ -976,7 +994,9 @@ export function createRemoteFaqRagAnswerHttpClient(
             logAnswerFailure('invalid_contract', response.status, 'answerResponse.status');
             return answerClientError('invalid_contract');
           }
-          if (!parsed.ok && parsed.error.code !== 'no_match') logAnswerFailure(parsed.error.code, response.status);
+          if (!parsed.ok && parsed.error.code !== 'no_match' && parsed.error.code !== 'local_processing_required') {
+            logAnswerFailure(parsed.error.code, response.status);
+          }
           return parsed;
         } finally {
           clearTimeout(timeout);

@@ -128,6 +128,68 @@ test('every one-shot golden crosses one signed /answer request without retry or 
   }
 });
 
+test('validated HTTP 403 local processing responses pass through one-shot without retry or error logging', async () => {
+  const localProcessingRequired = golden.responses.find((item) => item.statusCode === 403);
+  let calls = 0;
+  const client = createRemoteFaqRagAnswerHttpClient({
+    ...common,
+    fetch: async () => { calls += 1; return response(localProcessingRequired); },
+  });
+  const { value, entries } = await captureErrors(() => client.answer(request));
+  assert.deepEqual(value, JSON.parse(localProcessingRequired.body));
+  assert.equal(calls, 1);
+  assert.deepEqual(entries, []);
+});
+
+test('one-shot HTTP 403 requires a complete matching local processing contract', async () => {
+  const valid = JSON.parse(golden.responses.find((item) => item.statusCode === 403).body);
+  for (const body of [
+    'not json',
+    JSON.stringify({ message: 'Forbidden' }),
+    JSON.stringify({ ...valid, contractVersion: 'remote-v1' }),
+    JSON.stringify({ ...valid, contractVersion: 'unknown' }),
+    JSON.stringify({ ...valid, error: { code: 'local_processing_required' } }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryable: true } }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryable: 'false' } }),
+    JSON.stringify({ ...valid, extra: true }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryAfterMs: 1000 } }),
+  ]) {
+    let calls = 0;
+    const client = createRemoteFaqRagAnswerHttpClient({
+      ...common,
+      fetch: async () => { calls += 1; return new Response(body, { status: 403 }); },
+    });
+    const { value } = await captureErrors(() => client.answer(request));
+    assert.deepEqual(value.error, { code: 'retrieval_failed', retryable: true });
+    assert.equal(calls, 1);
+  }
+});
+
+test('one-shot local processing DTOs on other HTTP statuses keep the existing failure mapping', async () => {
+  const localProcessingRequired = golden.responses.find((item) => item.statusCode === 403);
+  for (const status of [200, 201, 400, 401, 404, 429, 500, 501, 502, 503, 504]) {
+    const client = createRemoteFaqRagAnswerHttpClient({
+      ...common, fetch: async () => new Response(localProcessingRequired.body, { status }),
+    });
+    const { value } = await captureErrors(() => client.answer(request));
+    const expectedCode = status === 404 || status === 501 ? 'remote_transport_unsupported'
+      : status === 401 || status === 429 || status >= 500 ? 'retrieval_failed' : 'invalid_contract';
+    assert.deepEqual(value.error, { code: expectedCode, retryable: expectedCode === 'retrieval_failed' });
+  }
+});
+
+test('HTTP 503 one-shot kill_switch stays retryable without immediate retries', async () => {
+  const killSwitch = golden.responses.find((item) => item.statusCode === 503);
+  let calls = 0;
+  const client = createRemoteFaqRagAnswerHttpClient({
+    ...common,
+    fetch: async () => { calls += 1; return response(killSwitch); },
+  });
+  const { value } = await captureErrors(() => client.answer(request));
+  assert.deepEqual(value, JSON.parse(killSwitch.body));
+  assert.equal(calls, 1);
+});
+
 test('one-shot caches AssumeRole credentials, refreshes, and charges signing time to the wire deadline', async () => {
   let now = 1_900_000_000_000;
   let assumeCalls = 0;

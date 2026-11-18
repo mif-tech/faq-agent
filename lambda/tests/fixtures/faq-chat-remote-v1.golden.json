@@ -207,11 +207,22 @@
       "body": "{\"contractVersion\":\"remote-v1\",\"ok\":false,\"error\":{\"code\":\"busy\",\"retryable\":true,\"retryAfterMs\":5000}}"
     }
   },
+  "localProcessingRequired": {
+    "retrieve": {
+      "statusCode": 403,
+      "body": "{\"contractVersion\":\"remote-v1\",\"ok\":false,\"error\":{\"code\":\"local_processing_required\",\"retryable\":false}}"
+    },
+    "generate": {
+      "statusCode": 403,
+      "body": "{\"contractVersion\":\"remote-v1\",\"ok\":false,\"error\":{\"code\":\"local_processing_required\",\"retryable\":false}}"
+    }
+  },
   "errorCatalog": [
     "no_match",
     "expired_token",
     "quota_exceeded",
     "kill_switch",
+    "local_processing_required",
     "invalid_contract",
     "deadline_exceeded",
     "retrieval_failed",

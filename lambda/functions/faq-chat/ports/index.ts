@@ -36,3 +36,8 @@ export interface FaqPorts {
   /** 省略時は追加語彙なし（handler の汎用語彙のみ） */
   guardVocabulary?: FaqGuardVocabulary;
 }
+
+export type FaqAnswerPorts = Pick<
+  FaqPorts,
+  'retrieval' | 'answerPrompt' | 'answerGeneration' | 'defaultModel'
+>;
