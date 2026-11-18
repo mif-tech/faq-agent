@@ -86,6 +86,92 @@ test('busy crosses retrieve/generate without sleeping or retrying', async () => 
   }
 });
 
+test('validated HTTP 403 local processing responses pass through both split operations without retry', async () => {
+  for (const operation of ['retrieve', 'generate']) {
+    let calls = 0;
+    const golden = fixture.localProcessingRequired[operation];
+    const client = createRemoteFaqRagHttpClient({
+      env: ENV,
+      credentialsProvider: STATIC_CREDENTIALS,
+      now: () => fixture.clock.initialEpochMs,
+      sleep: async () => assert.fail('local processing must not retry'),
+      fetch: async () => {
+        calls += 1;
+        return new Response(golden.body, { status: golden.statusCode });
+      },
+    });
+    const { value, entries } = await withoutConsoleErrors(() => client[operation](fixture.cases.success[operation].request));
+    assert.deepEqual(value, JSON.parse(golden.body));
+    assert.equal(calls, 1);
+    assert.deepEqual(entries, []);
+  }
+});
+
+test('split HTTP 403 requires a complete matching local processing contract', async () => {
+  const valid = JSON.parse(fixture.localProcessingRequired.retrieve.body);
+  const bodies = [
+    'not json',
+    JSON.stringify({ message: 'Forbidden' }),
+    JSON.stringify({ ...valid, contractVersion: 'remote-one-shot-v1' }),
+    JSON.stringify({ ...valid, contractVersion: 'unknown' }),
+    JSON.stringify({ ...valid, error: { code: 'local_processing_required' } }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryable: true } }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryable: 'false' } }),
+    JSON.stringify({ ...valid, extra: true }),
+    JSON.stringify({ ...valid, error: { ...valid.error, retryAfterMs: 1000 } }),
+  ];
+  for (const operation of ['retrieve', 'generate']) {
+    for (const body of bodies) {
+      let calls = 0;
+      const client = createRemoteFaqRagHttpClient({
+        env: ENV,
+        credentialsProvider: STATIC_CREDENTIALS,
+        now: () => fixture.clock.initialEpochMs,
+        fetch: async () => { calls += 1; return new Response(body, { status: 403 }); },
+      });
+      const { value } = await withoutConsoleErrors(() => client[operation](fixture.cases.success[operation].request));
+      assert.deepEqual(value.error, { code: operation === 'retrieve' ? 'retrieval_failed' : 'generation_failed', retryable: true });
+      assert.equal(calls, 1);
+    }
+  }
+});
+
+test('split local processing DTOs on other HTTP statuses keep the existing failure mapping', async () => {
+  for (const operation of ['retrieve', 'generate']) {
+    for (const status of [200, 201, 400, 401, 404, 429, 500, 502, 503, 504]) {
+      const client = createRemoteFaqRagHttpClient({
+        env: ENV,
+        credentialsProvider: STATIC_CREDENTIALS,
+        now: () => fixture.clock.initialEpochMs,
+        retrieveMaxRetries: 0,
+        fetch: async () => new Response(fixture.localProcessingRequired[operation].body, { status }),
+      });
+      const { value } = await withoutConsoleErrors(() => client[operation](fixture.cases.success[operation].request));
+      const technicalFailure = status === 401 || status >= 500;
+      assert.deepEqual(value.error, {
+        code: technicalFailure ? operation === 'retrieve' ? 'retrieval_failed' : 'generation_failed' : 'invalid_contract',
+        retryable: technicalFailure,
+      });
+    }
+  }
+});
+
+test('HTTP 503 kill_switch stays retryable without immediate retries on both split operations', async () => {
+  const dto = { contractVersion: 'remote-v1', ok: false, error: { code: 'kill_switch', retryable: true } };
+  for (const operation of ['retrieve', 'generate']) {
+    let calls = 0;
+    const client = createRemoteFaqRagHttpClient({
+      env: ENV,
+      credentialsProvider: STATIC_CREDENTIALS,
+      now: () => fixture.clock.initialEpochMs,
+      sleep: async () => assert.fail('kill_switch must not retry immediately'),
+      fetch: async () => { calls += 1; return jsonResponse(dto, 503); },
+    });
+    assert.deepEqual(await client[operation](fixture.cases.success[operation].request), dto);
+    assert.equal(calls, 1);
+  }
+});
+
 test('configuration fails fast and normalizes the base URL trailing slash', async () => {
   const common = { credentialsProvider: STATIC_CREDENTIALS };
   assert.throws(

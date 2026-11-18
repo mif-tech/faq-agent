@@ -8,6 +8,7 @@ export const FAQ_RAG_ERROR_CODES = [
   'expired_token',
   'quota_exceeded',
   'kill_switch',
+  'local_processing_required',
   'invalid_contract',
   'deadline_exceeded',
   'retrieval_failed',
@@ -23,6 +24,7 @@ export type FaqRagError =
   | { code: 'quota_exceeded'; retryable: true; retryAfterMs: number }
   | { code: 'busy'; retryable: true; retryAfterMs: number }
   | { code: 'kill_switch'; retryable: true }
+  | { code: 'local_processing_required'; retryable: false }
   | { code: 'invalid_contract'; retryable: false }
   | { code: 'deadline_exceeded'; retryable: true }
   | { code: 'retrieval_failed'; retryable: true }

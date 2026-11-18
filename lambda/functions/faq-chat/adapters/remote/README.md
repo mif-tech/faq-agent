@@ -21,11 +21,23 @@ configured role; it does not grant direct `execute-api:Invoke`. The client valid
 inbound DTOs, retries only split retrieval, and never retries split generation or one-shot answer. Question and message values
 are not written to its error logs.
 
-Remote failures never fall back to `free` automatically. A deliberate degradation updates the
-same stack to `FaqPortsProfile=free` and clears all three remote parameters, after the operator has
-verified that the local public KB is ready. Recovery is another reviewed deployment change that
-restores the complete remote parameter set; approval, rollback evidence, and incident handling
-belong in the deploying organization's runbook rather than this public transport contract.
+By default, a validated HTTP 403 response with code `local_processing_required` runs retrieval and generation with the local `free` adapters.
+Other remote errors do not trigger automatic fallback.
+
+The response must use the selected transport's contract version and `retryable: false`.
+The shell restarts local retrieval within the same invocation, including when split generation
+returns this response. It uses the free retrieval, prompt, generation, and default model together.
+Local retrieval waits for at most the smaller of the time left on the original remote deadline
+and the current Lambda remaining time after the response reserve. Expiration returns `refuse_time_budget`.
+Local public KB entries must be available and match the question.
+An empty `ANTHROPIC_API_KEY` selects an excerpt of the top entry (up to 300 characters);
+an invalid nonempty key produces a generation failure. Q&A storage and notification use the
+existing final-result path, at most once. No additional SAM parameter is required.
+
+When manually updating to `FaqPortsProfile=free`, explicitly set `FaqRemoteRagBaseUrl`,
+`FaqRemoteRagRoleArn`, and `FaqRemoteRagExternalId` to empty values. Changing the profile does
+not clear them automatically; the public template rejects retained remote values with `free`.
+Returning to `remote` requires explicitly setting all three remote parameters.
 
 ## Endpoint selection
 
@@ -43,18 +55,17 @@ or SAM parameter override. All operations keep `${baseUrl}/v1/${operation}` and 
 DTOs, deadlines and retry behavior. SigV4 includes the host, payload SHA-256, timestamp and
 temporary-credential session token for both entrypoints.
 
-This PR adds support without changing the existing API Gateway base URL. Function URLs use
+Function URLs use
 `AWS_IAM` authentication and `BUFFERED` invocation. The assumed MIF invoker role needs
 `lambda:InvokeFunctionUrl` for the specific v1 function and `lambda:InvokeFunction` for that
 function with `lambda:InvokedViaFunctionUrl=true`; the public caller role still only assumes
 the configured role. This does not authorize ordinary direct Lambda invocation.
 
-The approved cutover and rollback procedure will be finalized in PR4. Cutover will set
-`FaqRemoteRagBaseUrl` / `FAQ_REMOTE_RAG_BASE_URL` to the MIF-provided Function URL without an
-operation suffix; rollback will restore the recorded API Gateway base URL. Endpoint selection
+Set `FaqRemoteRagBaseUrl` / `FAQ_REMOTE_RAG_BASE_URL` to the supplied Function URL without an
+operation suffix; restore the recorded API Gateway base URL to switch back. Endpoint selection
 is independent of `FaqRemoteRagTransport`; no one-shot/split selection changes automatically.
 
-Both API Gateway JSON 403 responses and Function URL JSON, text or empty 403 responses retain
+Except for a validated `local_processing_required` response, API Gateway and Function URL 403 responses retain
 the existing technical failure classification (`retrieval_failed`, or `generation_failed` for
 split generation), with `remote_attempts[].outcome=failure` and no authentication retry.
 HTTP observations and error logs retain status 403 for diagnosis; gateway response bodies are
@@ -87,8 +98,8 @@ type RemoteFaqTransport =
   | { kind: 'one-shot-v1'; port: FaqRagAnswerPort };
 ```
 
-One-shot HTTP retry count is always zero. A timeout, network error, 401/403, 429, 5xx, or
-unsupported route produces a technical refusal; none invokes split or free as a fallback.
+One-shot HTTP retry count is always zero. A timeout, network error, 401, an unrecognized 403,
+429, 5xx, or unsupported route produces a technical refusal without invoking split or free.
 A contract-valid `no_match` 404 is a normal refusal. Every other 404/501 becomes the local
 `remote_transport_unsupported` diagnosis, recorded by the shell's operator metric. This code
 is not accepted in the server wire DTO. HTTP status must match the validated one-shot outcome.
@@ -104,7 +115,7 @@ Rollback is a deployment change to `FaqRemoteRagTransport=split-v1` (and therefo
 on the exact configured MIF invoker role. Exact `execute-api:Invoke` permission for
 `/api/POST/v1/answer` belongs to that assumed role on the server side, alongside the existing
 split routes. The canonical template retains its existing exact direct-invoke compatibility.
-The default transport and server `answerEnabled` gate keep the new path inactive until rollout.
+An unavailable answer operation returns HTTP 503 `kill_switch`.
 
 ## One-shot contract
 
@@ -128,6 +139,7 @@ uses the same public answer, source URL and refusal guards described below. Fail
 | `quota_exceeded` | 429 | true |
 | `busy` | 429 | true |
 | `kill_switch` | 503 | true |
+| `local_processing_required` | 403 | false |
 | `deadline_exceeded` | 504 | true |
 | `retrieval_failed` / `generation_failed` | 502 | true |
 
@@ -138,16 +150,13 @@ replays a terminal result, including retryable errors. `remainingMs` is excluded
 identity. In particular, a terminal `deadline_exceeded` result is replayed for the same key even
 if a later request has a larger `remainingMs`. Its `retryable: true` permits a new workflow with
 a new key; it does not authorize re-executing a terminal key. The HTTP client never retries,
-rotates the supplied key, or falls back automatically. Reusing a key with a different question,
+rotates the supplied key, or changes transport. Reusing a key with a different question,
 message, hints or contract version fails as `invalid_contract`; restarting an operation requires
 a new key. In-flight duplicates wait only
 within a bounded deadline, and an orphaned operation is never taken over for another provider call.
 
-The server ships with the answer feature disabled for every existing tenant until its private
-TenantConfig explicitly sets `answerEnabled: true`. Missing or false returns a valid one-shot
-`kill_switch`. The existing global master control remains an emergency stop; no answer-specific
-SSM request is added. The synthetic fixture `faq-chat-remote-one-shot-v1.golden.json` is public-safe;
-provider-input and private core goldens remain under the denied server stack directory.
+HTTP 503 `kill_switch` is retryable and does not select local processing. The synthetic fixture
+`faq-chat-remote-one-shot-v1.golden.json` covers the one-shot wire contract.
 
 ## Shell observability
 
@@ -238,9 +247,9 @@ The shell's own `requestId` identifies the enclosing FAQ invocation, and is not 
 MIF request ID. No diagnostic fields or provider messages are added to the wire DTO.
 
 One-shot failure logs retain finite HTTP status even for a valid technical error DTO. A
-401/403 can therefore be diagnosed independently of the public `retrieval_failed` code.
-Positive rollout smoke returning 403 fails authorization validation; only an intentional
-negative-role test should expect it. Unsupported transport classification remains limited
+401 or unrecognized 403 can therefore be diagnosed independently of `retrieval_failed`.
+Validated `local_processing_required` responses are excluded from client error logs.
+Unsupported transport classification remains limited
 to non-contract 404/501 and never authorizes a fallback.
 
 One-shot does not assign server retrieval or generation time to shell `kb_retrieval_ms` or
@@ -296,7 +305,7 @@ plain, `scopeFallback: true`, or technical
 Do not add optional fields to `remote-v1` after release. A wire-shape change requires a new
 contract version and an explicit compatibility policy.
 
-Defined errors are `no_match`, `expired_token`, `quota_exceeded`, `busy`, `kill_switch`,
+Defined errors are `no_match`, `expired_token`, `quota_exceeded`, `busy`, `kill_switch`, `local_processing_required`,
 `invalid_contract`, `deadline_exceeded`, `retrieval_failed`, and `generation_failed`. Retryability
 is fixed by the contract. `quota_exceeded` and `busy` require `retryAfterMs`: a positive safe integer
 at most `REMOTE_V1_LIMITS.retryAfterMs` (86,400,000). `busy` is always retryable; the server currently
@@ -312,11 +321,9 @@ Both split and one-shot return it with HTTP 429. The shell maps it to HTTP 429 w
 the existing CORS headers, and `{ "error": "busy", "retryable": true }`;
 the shell's own full slots use `Retry-After: 5`.
 It does not create a refusal envelope. The browser uses its existing HTTP 429 message.
-With admission enabled, generate/answer first perform one read-only replay lookup after
-authorization and kill switches. Completed replays consume no processing slot and return even
-when slots are full or the generation reserve is unavailable, provided the caller deadline remains.
-Admission then runs after the remaining-budget check, before daily
-quota consumption or the generate/answer claim. `busy` consumes no quota, session or idempotency key
+Completed replays remain available when processing slots are full or the remaining budget cannot
+cover the generation reserve, provided the replay completes within the caller deadline.
+`busy` consumes no quota, session or idempotency key
 and is not stored as a terminal result. Retry with the same key (and the same unconsumed split
 session while it remains valid). In-progress replay waits hold no processing slot: a lease acquired
 before a claim race is released before waiting. Waiting only returns replay/error, never takes over
@@ -434,34 +441,18 @@ answer/refusal that calls neither Claude nor remote does not acquire a slot. Eac
 `key=faq_inflight_slot#<i>` in the existing Settings table, without changing its key or TTL.
 Full slots immediately return the same HTTP 429 response described above; no polling occurs.
 
-The private server independently supports a total limit and optional tenant limit, both disabled
-by default. Split retrieve/generate and one-shot answer each acquire their own lease after
-authorization, kill switches and budget checks, before quota consumption. Completed replays bypass
-admission, and in-progress waits release any held lease before polling. Leases use Lambda remaining time, bounded by
-its Timeout, without subtracting caller deadlines or response reserves. Release is conditional
-on the owner token and best-effort; a failed release is reclaimed through lease expiry.
+Split retrieve/generate and one-shot answer can return HTTP 429 `busy` when no processing slot
+is available. Completed replays do not consume a slot.
 The shell settles outstanding smalltalk work and Q&A handling before release. A hard Lambda
 timeout can prevent finally from completing; the full remaining-time lease covers that case.
-Processing limits and timeout extensions are activated only in the PR4 staged rollout.
 
-Server-side internals — the opaque-session composer, the session/replay/quota state store
-(in-memory reference vs the managed DynamoDB state store), tenant namespacing, and the private
-KB/prompt/LLM composition — live only in the canonical repository (`opaque-session.ts`,
-`opaque-session-store.ts`, `production-rag.ts`, and the `lambda/stacks/remote-rag` stack) and are not
-part of the public distribution.
+The wire caller cannot choose the model or schema.
 
-Structured output is enabled only when both the selected model's server-owned allowlist decision
-and the generation port capability permit it. The wire caller cannot choose the model or schema.
-
-Public sync includes `http-client.ts` and its sanitized split/answer client tests together with
+The public package includes `http-client.ts` and its split/answer client tests together with
 the higher-level ports, transport selector, DTO validators, documentation, synthetic golden
-fixtures, and wire-contract tests. Each file is explicitly allowlisted. It intentionally
-excludes `opaque-session.ts`, `opaque-session-store.ts`, `production-rag.ts`, and the entire
-`lambda/stacks/remote-rag` server implementation, including its KB search/injection, private prompt,
-and LLM wiring.
+fixtures, and wire-contract tests.
 
-The canonical handler and the public lite composition wire the public-safe HTTP client when
-`FAQ_PORTS_PROFILE=remote`; the managed `remote-rag` stack owns and composes the excluded server
-seam. The public lite SAM template requires the remote API base URL, the exact cross-account role
+The HTTP client is selected when `FAQ_PORTS_PROFILE=remote`.
+The public lite SAM template requires the remote API base URL, the exact cross-account role
 ARN, and its ExternalId together. It grants the generated FAQ caller role only `sts:AssumeRole` on
 that configured role; the free profile does not initialize the remote client.

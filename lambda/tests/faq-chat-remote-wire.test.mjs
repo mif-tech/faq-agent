@@ -55,6 +55,7 @@ const EXPECTED_ERROR_CODES = [
   'expired_token',
   'quota_exceeded',
   'kill_switch',
+  'local_processing_required',
   'invalid_contract',
   'deadline_exceeded',
   'retrieval_failed',
@@ -65,6 +66,7 @@ const EXPECTED_RETRIEVE_ERROR_CODES = [
   'no_match',
   'quota_exceeded',
   'kill_switch',
+  'local_processing_required',
   'invalid_contract',
   'deadline_exceeded',
   'retrieval_failed',
@@ -74,6 +76,7 @@ const EXPECTED_GENERATE_ERROR_CODES = [
   'expired_token',
   'quota_exceeded',
   'kill_switch',
+  'local_processing_required',
   'invalid_contract',
   'deadline_exceeded',
   'generation_failed',
@@ -84,6 +87,7 @@ const EXPECTED_RETRYABLE = {
   expired_token: true,
   quota_exceeded: true,
   kill_switch: true,
+  local_processing_required: false,
   invalid_contract: false,
   deadline_exceeded: true,
   retrieval_failed: true,
@@ -273,6 +277,17 @@ test('error catalog, operation sets, retryability, and retry delay bounds are fi
         assertInvalid(parser, errorResponse(code, { retryAfterMs: 1 }));
       }
     }
+  }
+});
+
+test('local processing retrieve/generate envelopes preserve exact UTF-8 response bytes', () => {
+  for (const [operation, parser] of [
+    ['retrieve', parseRemoteV1RetrieveResponse],
+    ['generate', parseRemoteV1GenerateResponse],
+  ]) {
+    const golden = fixture.localProcessingRequired[operation];
+    assert.equal(golden.statusCode, 403);
+    assert.deepEqual(Buffer.from(JSON.stringify(parser(JSON.parse(golden.body)))), Buffer.from(golden.body));
   }
 });
 

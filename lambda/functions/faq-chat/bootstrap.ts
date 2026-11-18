@@ -7,7 +7,9 @@ import { runFaqEntrypoint } from './shell-timing.js';
 
 const composition = createFaqComposition();
 
-export const handler = createFaqHandler(composition.ports, composition.remoteRag);
+export const handler = createFaqHandler(composition.ports, composition.remoteRag, {
+  freeAnswerPorts: composition.freeAnswerPorts,
+});
 
 function streamError(statusCode: 400 | 500): APIGatewayProxyResultV2 {
   return jsonResponse(statusCode, statusCode === 400 ? { error: 'Invalid request' } : TECHNICAL_FALLBACK_ENVELOPE);

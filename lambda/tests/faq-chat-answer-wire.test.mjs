@@ -35,6 +35,7 @@ test('synthetic request and all response envelopes preserve frozen UTF-8 bytes',
   assert.equal(JSON.stringify(parseRequest(request())), golden.request);
   const expectedStatus = {
     no_match: 404, invalid_contract: 400, quota_exceeded: 429, kill_switch: 503,
+    local_processing_required: 403,
     deadline_exceeded: 504, retrieval_failed: 502, generation_failed: 502,
     busy: 429,
   };

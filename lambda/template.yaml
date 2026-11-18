@@ -57,8 +57,8 @@ Parameters:
       - split-v1
       - one-shot-v1
     Description: >-
-      Deployment-only transport for FAQ_PORTS_PROFILE=remote. Keep split-v1 until
-      one-shot evaluation passes; one-shot-v1 calls POST /v1/answer without fallback.
+      Deployment-only transport for FAQ_PORTS_PROFILE=remote. one-shot-v1 calls POST /v1/answer.
+      A validated local_processing_required response uses local free retrieval and generation.
 
   FaqRemoteRagBaseUrl:
     Type: String
@@ -257,9 +257,7 @@ Rules:
         AssertDescription: >-
           FaqRemoteRagRoleArn and FaqRemoteRagExternalId must both be set or both be empty
 
-  # remote 設定値がどれか非空なら profile=remote を強制する。これが無いと free + remote3値 という
-  # 組み合わせが通り、free の字句検索で静かに動き続ける（唯一残る実行時無症状のフォールバック）。
-  # 二段 onboarding の stage1 は3値とも空なので RuleCondition は成立せず競合しない。
+  # Require the remote profile when any remote configuration value is set.
   FaqRemoteConfigRequiresRemoteProfile:
     RuleCondition: !Not
       - !And
@@ -269,8 +267,8 @@ Rules:
     Assertions:
       - Assert: !Equals [!Ref FaqPortsProfile, remote]
         AssertDescription: >-
-          FaqRemoteRag* settings require FaqPortsProfile=remote so the shell does not silently
-          serve free lexical results while remote is configured
+          FaqRemoteRag* settings require FaqPortsProfile=remote; explicitly clear all three
+          remote parameters when selecting free
 
   SlackConfigurationMustBeComplete:
     RuleCondition: !Or

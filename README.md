@@ -26,9 +26,14 @@ MIF管理の検索・生成APIを接続した商用構成は、実顧客向け�
 ## 設計上の要点
 
 - **交換可能な実行境界:** HTTP handler と検索・生成・保存の実装を [`ports/`](lambda/functions/faq-chat/ports/) で分離しています。`free` / `remote` を切り替えても、入力ガード、Q&Aログ、PIIマスク、応答封筒は lite 側に残ります。
-- **fail-closed な remote 境界:** remote の必須設定不足や組み合わせ不整合は CloudFormation Rules と初期化時検証で拒否します。remote 障害時に `free` へ自動フォールバックせず、[`remote-v1` / `remote-one-shot-v1`](lambda/functions/faq-chat/adapters/remote/README.md) の入出力 DTO も未知フィールドを含めて検証します。
+- **fail-closed な remote 境界:** remote の必須設定不足や組み合わせ不整合は CloudFormation Rules と初期化時検証で拒否します。[`remote-v1` / `remote-one-shot-v1`](lambda/functions/faq-chat/adapters/remote/README.md) の入出力 DTO は未知フィールドを含めて検証します。
 - **限定された cross-account 認証:** remote 認証は指定した role への `sts:AssumeRole` に限定し、caller role に直接の `execute-api:Invoke` を付与しません。取得した一時 credential で Remote RAG API へのリクエストを SigV4 署名します。
 - **再現可能な検証:** [CI](.github/workflows/ci.yml) で TypeScript 型検査、契約・異常系・権限境界のテスト、SAM template lint を実行します。モック評価は合成データだけを使い、ネットワークへ接続しません。
+
+By default, a validated HTTP 403 response with code `local_processing_required` runs retrieval and generation with the local `free` adapters.
+Other remote errors do not trigger automatic fallback.
+
+選択中の transport と同じ契約バージョンで `retryable: false` の応答だけを受け付けます。同じ invocation の残り時間で手元の KB 検索からやり直すため、質問に一致する公開 KB が必要です。`ANTHROPIC_API_KEY` が空なら最上位 KB の先頭300字までを抜粋し、空でない無効なキーでは生成失敗になります。Q&A 保存・通知は既存の最終結果の処理で、それぞれ最大1回だけ行います。追加の SAM パラメータは不要です。
 
 ## ローカルで確認する
 
@@ -407,7 +412,7 @@ transport はデプロイ時の `FaqRemoteRagTransport` → `FAQ_REMOTE_RAG_TRAN
 credential 取得や HTTP 呼出し前に構成エラーで停止します。custom domain の region は推定しません。
 リクエスト先は引き続き `${baseUrl}/v1/${operation}` で、DTO・時間予算・transport の既定値は変わりません。
 
-Function URL は入口追加のみで、既存 API Gateway からの切替は PR4 です。上記「公開 REST STREAM 経路」の
+Function URL への切替は、上記「公開 REST STREAM 経路」の
 チェックリストと配信・切り戻し順序に従い、切替時は MIF が提示する URL を `FaqRemoteRagBaseUrl` に指定します。
 時間延長後の切り戻しは MIF の時間短縮・処理完了・shell の短縮・旧入口の確認を先に行い、
 記録した API Gateway Base URL に戻します。MIF 側の引受先 role に対象 v1 関数限定の `lambda:InvokeFunctionUrl` と
@@ -417,12 +422,12 @@ lite caller role の権限は引き続き exact role への `sts:AssumeRole` の
 ### 既存利用者の one-shot 切替手順
 
 1. 正本から公開同期され、レビュー済みの公開 revision を clone 側へ取り込みます。`PUBLIC_SYNC_MANIFEST.json` の source ref / SHA と、`remote-one-shot-v1` client、`FaqRemoteRagTransport` を含む template の対応を確認し、切替前の revision と `split-v1` 設定を記録します。コードがあるだけでは本番切替の承認にはなりません。
-2. MIF 担当者に、その tenant の `enabled=true` / `answerEnabled=true`、global gate、exact tenant role mapping、MIF 所有 invoker role の exact `api/POST/v1/answer` への `execute-api:Invoke` を確認してもらいます。caller の exact role への AssumeRole 許可と MIF 側 trust / ExternalId の一致も必要です。gate は最大60秒の cache 反映待ちがあり、MIF 側の現在値や認証値は公開文書に記録しません。
+2. 接続先が `POST /v1/answer` を受理すること、invoker role に exact `api/POST/v1/answer` への `execute-api:Invoke` があることを確認します。caller の exact role への AssumeRole 許可と接続先の trust / ExternalId の一致も必要です。
 3. 品質・性能評価と運用承認の後、利用者側の権限保持者が既存 faq-lite の配備手順で `FaqPortsProfile=remote` を維持し、`FaqRemoteRagTransport=one-shot-v1` を指定して再配備します。既存の接続先・role・秘密入力・通知設定を保持し、実環境の `FAQ_REMOTE_RAG_TRANSPORT` を読み戻します。
-4. 別途承認された動作確認で `remote_transport=one-shot-v1`、`remote_operation=answer`、`remote_http_calls=1` と、shell / MIF の request ID の対応を確認します。401/403、429/503、timeout、未対応route、品質悪化があれば切替を停止し、本文を含まない件数・終端余裕を保存します。ローカル単体テストだけで性能改善を判断しません。
-5. **rollback は caller を `FaqRemoteRagTransport=split-v1` に戻して再配備する操作です。** 環境変数と新しい shell metric を読み戻し、通常の検索回答では retrieve / generate に戻ったことを確認します。MIF の `answerEnabled=false` だけでは one-shot caller が拒否を続けるため不十分です。caller 切戻しと処理中要求の完了後、必要なら MIF 担当者が answer gate を閉じます。処理中 answer の split 再送や自動 fallback は行いません。
+4. 動作確認で `remote_transport=one-shot-v1`、`remote_operation=answer`、`remote_http_calls=1` と、shell / 接続先の request ID の対応を確認します。401、契約に一致しない403、429/503、timeout、未対応route、品質悪化があれば切替を停止し、本文を含まない件数・終端余裕を保存します。ローカル単体テストだけで性能改善を判断しません。
+5. **rollback は caller を `FaqRemoteRagTransport=split-v1` に戻して再配備する操作です。** 環境変数と shell metric を読み戻し、通常の検索回答では retrieve / generate に戻ったことを確認します。処理中 answer を split で再送しません。
 
-one-shot は HTTP retry を行わず、timeout・network error・401/403・429・5xx や未対応 route でも split/free にフォールバックしません。契約に一致する `no_match` の404は通常の検索不一致として扱い、それ以外の404/501は `remote_transport_unsupported` の技術的拒否として記録します。MIF invoker role には exact `/api/POST/v1/answer` の実行権限が必要で、lite caller role は引き続き exact role への `sts:AssumeRole` のみです。
+one-shot は HTTP retry を行いません。timeout・network error・401・契約に一致しない403・429・5xx や未対応 route は技術的拒否になります。契約に一致する `no_match` の404は通常の検索不一致として扱い、それ以外の404/501は `remote_transport_unsupported` の技術的拒否として記録します。MIF invoker role には exact `/api/POST/v1/answer` の実行権限が必要で、lite caller role は引き続き exact role への `sts:AssumeRole` のみです。
 
 **lite 殻と MIF Remote RAG API は同一 AWS region に配置してください。** Base URL、role ARN、ExternalId のいずれかが欠けた `remote` 更新は CloudFormation Rules が拒否します。Role ARN と ExternalId の片方だけを設定することもできません。
 
